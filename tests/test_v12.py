@@ -78,13 +78,13 @@ check("compress to size: PDF", pdf_size)
 
 
 def meta_jpeg():
-    out, src = run("img.meta", ["photo.jpg"], {"fields": {"title": "Tangerine test", "author": "Lime", "copyright": "(c) me",
+    out, src = run("img.meta", ["photo.jpg"], {"fields": {"title": "Lime test", "author": "Lime", "copyright": "(c) me",
                                                           "date": "2026:10:19 10:00:00", "comment": "hello"},
                                                "checks": {}, "strip": False})
     from limewheel.ops.extras import _image_meta
     _, v, _ = _image_meta(out[0])
     same_pixels = open(src[0], "rb").read()[-2000:] == open(out[0], "rb").read()[-2000:]
-    return (v["title"] == "Tangerine test" and v["author"] == "Lime" and v["comment"] == "hello" and same_pixels,
+    return (v["title"] == "Lime test" and v["author"] == "Lime" and v["comment"] == "hello" and same_pixels,
             f"read back title={v['title']!r} author={v['author']!r}; image data untouched={same_pixels}")
 
 
