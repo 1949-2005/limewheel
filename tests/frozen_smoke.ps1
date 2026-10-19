@@ -1,5 +1,5 @@
 # Runs one operation per library inside a packaged build to prove nothing is missing from the bundle.
-#   powershell -File tests\frozen_smoke.ps1 -Exe dist\Tangerine\Tangerine.exe -Samples <folder with test samples>
+#   powershell -File tests\frozen_smoke.ps1 -Exe dist\<App>\<App>.exe -Samples <folder with test samples>
 param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$Samples)
 $ErrorActionPreference = "Stop"
 $work = Join-Path $env:TEMP "frozen-smoke"
