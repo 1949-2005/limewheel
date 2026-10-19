@@ -45,6 +45,18 @@ _P = {
     "sliders": '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
     "eye-off": '<path d="M10.7 5.1A9.8 9.8 0 0 1 12 5c5 0 8.5 4.6 9.6 6.4a1.2 1.2 0 0 1 0 1.2 17 17 0 0 1-2.4 3.1M6.6 6.6A16.6 16.6 0 0 0 2.4 11.4a1.2 1.2 0 0 0 0 1.2C3.5 14.4 7 19 12 19a9.6 9.6 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18"/>',
     "pen": '<path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z"/><path d="M14 6l3 3"/>',
+    # file categories (centre of the wheel for files without a picture preview)
+    "cat-video": '<rect x="2.5" y="5" width="14" height="14" rx="2.5"/><path d="m16.5 10 5-3v10l-5-3"/>',
+    "cat-audio": '<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>',
+    "cat-pdf": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 17v-4h1.5a1.3 1.3 0 0 1 0 2.6H8M13 13v4h1a2 2 0 0 0 0-4z"/>',
+    "cat-doc": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h6M8 9h2"/>',
+    "cat-slides": '<rect x="2.5" y="3.5" width="19" height="13" rx="2"/><path d="M12 16.5V21M8 21h8M7 12l3-3 2 2 4-4"/>',
+    "cat-sheet": '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 9v12M15 9v12"/>',
+    "cat-book": '<path d="M4 19.5V5a2.5 2.5 0 0 1 2.5-2.5H20v17H6.5A2.5 2.5 0 0 0 4 22"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>',
+    "cat-subs": '<rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M7 15h4M13 15h4M7 11h2M11 11h6"/>',
+    "cat-archive": '<rect x="2.5" y="3" width="19" height="5" rx="1.5"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/>',
+    "cat-folder": '<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/>',
+    "frame": '<rect x="2.5" y="2.5" width="19" height="19" rx="3"/><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="m7 14.5 3-3 2.5 2.5 1.5-1.5 3 3"/>',
     "layers": '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
     "gauge": '<path d="M12 14l4-4"/><path d="M3.5 18a9.5 9.5 0 1 1 17 0z"/>',
     "headphones": '<path d="M3 18v-6a9 9 0 0 1 18 0v6"/><rect x="2.5" y="14" width="5" height="7" rx="2"/><rect x="16.5" y="14" width="5" height="7" rx="2"/>',
@@ -75,7 +87,7 @@ OP_ICONS = {
     "act.float": "pin", "act.copy": "copy", "act.move": "move", "act.path": "link",
     "act.terminal": "terminal", "act.reveal": "folder",
     "arc.extract": "package",
-    "img.edit": "sliders", "img.crop": "crop", "img.redact": "eye-off", "img.annotate": "pen", "img.background": "layers",
+    "img.edit": "sliders", "img.crop": "crop", "img.redact": "eye-off", "img.annotate": "pen", "img.background": "frame",
     "vid.crop": "crop", "vid.speed": "gauge", "aud.speed": "gauge", "aud.channels": "headphones",
     "vid.channels": "headphones", "aud.bleep": "bleep", "vid.bleep": "bleep", "act.share": "share",
     "img.tosize": "target", "vid.tosize": "target", "aud.tosize": "target", "pdf.tosize": "target",
@@ -106,3 +118,22 @@ def pixmap(name: str, color: str, size: int, dpr: float = 1.0, stroke: float = 1
 
 def for_op(op) -> str | None:
     return OP_ICONS.get(op.id)
+
+
+_CATEGORY = {
+    "cat-video": "mp4 mov mkv webm avi wmv m4v flv mpg mpeg 3gp ts",
+    "cat-audio": "mp3 m4a wav flac ogg opus aiff aif wma aac",
+    "cat-pdf": "pdf",
+    "cat-doc": "docx doc odt rtf txt md markdown html htm",
+    "cat-slides": "pptx ppt odp key",
+    "cat-sheet": "xlsx xls ods csv tsv numbers",
+    "cat-book": "epub mobi",
+    "cat-subs": "srt vtt ass ssa",
+    "cat-archive": "zip rar 7z tar gz tgz bz2 xz",
+}
+_EXT_CATEGORY = {e: name for name, exts in _CATEGORY.items() for e in exts.split()}
+
+
+def for_file(ext: str, is_dir: bool = False) -> str:
+    """Category glyph for a file type (images get a real thumbnail instead)."""
+    return "cat-folder" if is_dir else _EXT_CATEGORY.get(ext, "file")

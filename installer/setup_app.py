@@ -24,7 +24,7 @@ def resource(name: str) -> Path:
 sys.path.insert(0, str(resource("")))
 from limewheel.brand import NAME as APP  # noqa: E402
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 PUBLISHER = f"{APP} for Windows"
 UNINSTALL_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{APP}"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"

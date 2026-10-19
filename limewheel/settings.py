@@ -23,6 +23,8 @@ DEFAULTS = {
     "hold_with_mouse": False,
     # Open the folder (with the new file selected) when a job finishes.
     "reveal_when_done": False,
+    # Soft tick when a petal lights up.
+    "sounds": True,
 }
 
 

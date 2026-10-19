@@ -107,9 +107,29 @@ def _ico_frame_png(f: Image.Image) -> bytes:
     return buf.getvalue()
 
 
-def save_ico(im: Image.Image, dst: Path, sizes=ICO_SIZES) -> Path:
+def _ico_frame_bmp(f: Image.Image) -> bytes:
+    """One icon frame as a classic 32-bit DIB (BGRA, bottom-up, plus the 1-bit AND mask). Every
+    Explorer code path reads these; some shell caches show a blank page for small PNG frames."""
+    import struct
+    s = f.width
+    xor = f.convert("RGBA").transpose(Image.Transpose.FLIP_TOP_BOTTOM).tobytes("raw", "BGRA")
+    row = ((s + 31) // 32) * 4
+    alpha = f.getchannel("A").transpose(Image.Transpose.FLIP_TOP_BOTTOM).tobytes()
+    mask = bytearray()
+    for y in range(s):
+        bits = bytearray(row)
+        for x in range(s):
+            if alpha[y * s + x] == 0:
+                bits[x // 8] |= 0x80 >> (x % 8)
+        mask += bits
+    head = struct.pack("<IiiHHIIiiII", 40, s, s * 2, 1, 32, 0, len(xor) + len(mask), 0, 0, 0, 0)
+    return head + xor + bytes(mask)
+
+
+def save_ico(im: Image.Image, dst: Path, sizes=ICO_SIZES, bmp_below: int = 0) -> Path:
     """Write a Windows .ico: square frames, each size rendered from the source with Lanczos
-    (small sizes lightly sharpened) and stored as compressed PNG."""
+    (small sizes lightly sharpened) and stored as compressed PNG. Frames smaller than
+    `bmp_below` are stored as BMP instead (bigger, but safest for app and shortcut icons)."""
     import struct
     from PIL import ImageFilter
     sq = _pad_square(im)
@@ -125,7 +145,7 @@ def save_ico(im: Image.Image, dst: Path, sizes=ICO_SIZES) -> Path:
             *rgb, a = f.split()
             rgb = Image.merge("RGB", rgb).filter(ImageFilter.UnsharpMask(radius=0.5, percent=pct, threshold=0))
             f = Image.merge("RGBA", (*rgb.split(), a))
-        blobs.append((s, _ico_frame_png(f)))
+        blobs.append((s, _ico_frame_bmp(f) if s < bmp_below else _ico_frame_png(f)))
     out = bytearray(struct.pack("<HHH", 0, 1, len(blobs)))
     offset = 6 + 16 * len(blobs)
     for s, data in blobs:

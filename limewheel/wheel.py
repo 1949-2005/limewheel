@@ -5,13 +5,13 @@ import math
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import (QFileInfo, QObject, QPointF, QRectF, QRunnable, QSize, Qt, QThreadPool, QTimer,
+from PySide6.QtCore import (QObject, QPointF, QRectF, QRunnable, QSize, Qt, QThreadPool, QTimer,
                             QVariantAnimation, Signal)
 from PySide6.QtGui import (QColor, QCursor, QFont, QImageReader, QLinearGradient, QPainter, QPainterPath, QPen,
                            QPixmap, QRadialGradient)
-from PySide6.QtWidgets import QFileIconProvider, QWidget
+from PySide6.QtWidgets import QWidget
 
-from . import icons
+from . import icons, sounds
 from .ops import ops_for
 from .ops.base import ext_of, force_foreground
 from .brand import B, NAME
@@ -20,12 +20,19 @@ from .ui import ACCENT, INK, reduced_motion, ui_font
 MODES = [("convert", "Convert"), ("tools", "Tools"), ("actions", "Actions")]
 KEY_LABEL = {"shift": "Shift", "ctrl": "Ctrl", "alt": "Alt"}
 
-CENTER_R = 66          # hole in the middle (thumbnail lives here)
-RING_W = 108
-RING_GAP = 8           # gap between rings and between petals (px)
-RIM = 12               # frosted rim around the outermost ring
+# Proportions follow the product site's wheel (inner 48.6 / outer 119.5 / disc 126 on 272 px), x1.5.
+CENTER_R = 67          # hole in the middle (thumbnail lives here)
+RING_W = 106
+RING_GAP = 6           # gap between rings and between petals (px)
+RIM = 10               # frosted disc edge around the outermost ring
 RING_CAP = [8, 14, 20]
-SIZE = 2 * (CENTER_R + 3 * (RING_W + RING_GAP) + RIM) + 90
+SIZE = 2 * (CENTER_R + 3 * (RING_W + RING_GAP) + RIM) + 100
+LABEL_FONT = "Segoe UI Variable Display"   # what the site's rounded font stack falls back to on Windows
+HOT = QColor(B["hot"])
+HOT_EDGE = QColor(*B["hot_edge"])
+PETAL_EDGE = QColor(93, 102, 102, 56)
+LABEL = QColor("#000000")
+CAPTION = QColor(108, 121, 125)
 
 PETAL_TOP = QColor(*B["petal_top"])
 PETAL_BOTTOM = QColor(*B["petal_bottom"])
@@ -67,20 +74,20 @@ class _VideoThumb(QRunnable):
             pass
 
 
-def frosted_backdrop(x: int, y: int, size: int) -> QPixmap | None:
-    """Screenshot what is behind the wheel and blur it: the 'frosted glass' the wheel sits on.
-    Windows has no smooth, round blur-behind for layered windows, so we make our own."""
-    from PySide6.QtCore import QPoint
+def frosted_backdrop(centre, size: int):
+    """Screenshot the whole screen under `centre` and blur it: the 'frosted glass' the wheel
+    sits on (Windows has no smooth, round blur-behind for layered windows, so we make our own).
+    Returns (pixmap, luma around centre, screen top-left) or None. The whole screen is kept so
+    the wheel can move away from an edge without a new capture."""
     from PySide6.QtGui import QGuiApplication
     try:
-        from PIL import Image, ImageEnhance, ImageFilter
+        from PIL import Image, ImageEnhance, ImageFilter, ImageStat
         from .editors import pil_to_qimage, qimage_to_pil
     except Exception:
         return None
-    centre = QPoint(x + size // 2, y + size // 2)
     screen = QGuiApplication.screenAt(centre) or QGuiApplication.primaryScreen()
     geo = screen.geometry()
-    shot = screen.grabWindow(0, x - geo.x(), y - geo.y(), size, size)
+    shot = screen.grabWindow(0, 0, 0, geo.width(), geo.height())
     if shot.isNull():
         return None
     im = qimage_to_pil(shot.toImage()).convert("RGB")
@@ -91,9 +98,11 @@ def frosted_backdrop(x: int, y: int, size: int) -> QPixmap | None:
     small = ImageEnhance.Brightness(small).enhance(1.1)
     pm = QPixmap.fromImage(pil_to_qimage(small.resize((w, h), Image.Resampling.BICUBIC)))
     pm.setDevicePixelRatio(shot.devicePixelRatio())
-    from PIL import ImageStat
-    luma = ImageStat.Stat(small.convert("L")).mean[0] / 255          # 0 dark .. 1 light
-    return pm, luma
+    k = small.width / max(1, geo.width())
+    cx, cy, r = (centre.x() - geo.x()) * k, (centre.y() - geo.y()) * k, size * k / 2
+    area = small.crop((max(0, int(cx - r)), max(0, int(cy - r)), max(1, int(cx + r)), max(1, int(cy + r))))
+    luma = ImageStat.Stat(area.convert("L")).mean[0] / 255          # 0 dark .. 1 light
+    return pm, luma, geo.topLeft()
 
 
 def _pt(c: QPointF, r: float, deg: float) -> QPointF:
@@ -186,8 +195,11 @@ class Wheel(QWidget):
         self.keyboard = False
         self.dropped = False
         self.thumb: QPixmap | None = None
+        self.glyph: str | None = None      # category icon when there's no picture preview
         self.backdrop: QPixmap | None = None
         self.backdrop_luma = 1.0
+        self.backdrop_origin = None          # screen top-left of the backdrop pixmap
+        self.anchor = None                   # where the cursor was when the wheel opened
         self._thumb_token = 0
         self._thumb_jobs: set = set()
         self.size_text = ""
@@ -222,11 +234,11 @@ class Wheel(QWidget):
         self.setFocus()
 
     def _show_at(self, pos):
-        # Always centred on the cursor: the drop has to land on us.
-        self.move(pos.x() - SIZE // 2, pos.y() - SIZE // 2)
+        self.anchor = pos
         if not self.isVisible():
-            got = frosted_backdrop(pos.x() - SIZE // 2, pos.y() - SIZE // 2, SIZE)
-            self.backdrop, self.backdrop_luma = got if got else (None, 1.0)
+            got = frosted_backdrop(pos, SIZE)
+            self.backdrop, self.backdrop_luma, self.backdrop_origin = got if got else (None, 1.0, None)
+        self._place()
         self.glow.clear()
         self.show()
         self.raise_()
@@ -234,13 +246,30 @@ class Wheel(QWidget):
             self._pop.start()
         self.visibility_changed.emit(True)
 
+    def _place(self):
+        """Centre the wheel on the cursor, but slide it inward when the cursor is near a screen
+        edge so every petal, the key chips and the caption stay visible. The cursor always stays
+        inside our window, so the drop still lands on us."""
+        from PySide6.QtGui import QGuiApplication
+        pos = getattr(self, "anchor", None) or QCursor.pos()
+        screen = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
+        a = screen.availableGeometry()
+        r = self._outer() + RIM
+        top, bottom, side = r + 48, r + 44, r + 6        # chips above, caption below
+        cx = min(max(pos.x(), a.left() + side), a.right() - side) if a.width() > 2 * side else pos.x()
+        cy = min(max(pos.y(), a.top() + top), a.bottom() - bottom) if a.height() > top + bottom else pos.y()
+        lim = SIZE // 2 - 4                                 # never push the cursor out of the window
+        cx = min(max(cx, pos.x() - lim), pos.x() + lim)
+        cy = min(max(cy, pos.y() - lim), pos.y() + lim)
+        self.move(cx - SIZE // 2, cy - SIZE // 2)
+
     def _set_scale(self, v):
         self.scale = float(v)
         self.update()
 
     def _set_paths(self, paths):
         self.paths = paths
-        self.thumb, self.size_text = None, ""
+        self.thumb, self.glyph, self.size_text = None, None, ""
         if not paths:
             return
         self.size_text = _human_size(paths)
@@ -255,7 +284,7 @@ class Wheel(QWidget):
             if not img.isNull():
                 self.thumb = QPixmap.fromImage(img)
         if self.thumb is None:
-            self.thumb = QFileIconProvider().icon(QFileInfo(str(p))).pixmap(96, 96)
+            self.glyph = icons.for_file(ext_of(p), p.is_dir())
             if ext_of(p) in VIDEO_EXTS:
                 self._thumb_token += 1
                 job = _VideoThumb(p, self._thumb_token)
@@ -269,7 +298,7 @@ class Wheel(QWidget):
         if token == self._thumb_token and data:
             pm = QPixmap()
             if pm.loadFromData(data):
-                self.thumb = pm
+                self.thumb, self.glyph = pm, None
                 self.update()
 
     def set_mode(self, mode: str):
@@ -305,6 +334,8 @@ class Wheel(QWidget):
             self.rings = rings
         self.hover = 0 if (self.keyboard and n) else -1
         self.glow.clear()
+        if self.isVisible():
+            self._place()                     # more rings = bigger wheel; keep it on screen
 
     def hideEvent(self, e):
         self.visibility_changed.emit(False)
@@ -347,6 +378,8 @@ class Wheel(QWidget):
     def _set_hover(self, idx: int):
         if idx != self.hover:
             self.hover = idx
+            if idx >= 0 and self.isVisible() and self.settings.get("sounds", True):
+                sounds.play("highlight")
             if self.motion:
                 if not self._fade.isActive():
                     self._fade.start(16)
@@ -449,7 +482,8 @@ class Wheel(QWidget):
         p.save()
         p.resetTransform()
         p.setClipPath(path)
-        p.drawPixmap(0, 0, self.backdrop)
+        o = self.backdrop_origin - self.pos() if self.backdrop_origin is not None else None
+        p.drawPixmap(o.x() if o else 0, o.y() if o else 0, self.backdrop)
         p.restore()
 
     @staticmethod
@@ -478,6 +512,31 @@ class Wheel(QWidget):
         p.drawPath(path)
         p.restore()
 
+    @staticmethod
+    def _font(px: float, weight=QFont.DemiBold, spacing: float = 0.0, caps: bool = False) -> QFont:
+        f = QFont(LABEL_FONT)
+        if not f.exactMatch():
+            f = ui_font(10, weight)
+        f.setPixelSize(max(1, round(px)))
+        f.setWeight(weight)
+        if spacing:
+            f.setLetterSpacing(QFont.AbsoluteSpacing, spacing)
+        if caps:
+            f.setCapitalization(QFont.AllUppercase)
+        return f
+
+    def _caption(self) -> str:
+        if 0 <= self.hover < len(self.ops):
+            op = self.ops[self.hover]
+            label = op.label.rstrip("…")
+            if self.mode == "convert" and op.badge and not icons.for_op(op):
+                return f"Convert to {op.badge}"
+            return label
+        if self.paths:
+            name = self.paths[0].name if len(self.paths) == 1 else ""
+            return f"{name}  ·  {self.size_text}" if name else self.size_text
+        return f"{dict(MODES)[self.mode]}: drop a file on a petal"
+
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -492,41 +551,48 @@ class Wheel(QWidget):
             p.translate(-c)
         outer = self._outer()
         rim = outer + RIM
-
+        hole = CENTER_R - 4
         dark = 1 - min(1.0, self.backdrop_luma / 0.55)      # 0 on light desktops, 1 on very dark ones
 
-        # Very soft contact shadow (glass barely casts one)
-        shadow = QRadialGradient(QPointF(c.x(), c.y() + 12), rim + 26)
-        shadow.setColorAt(0.84, QColor(*B["shadow"], 45))
-        shadow.setColorAt(1.0, QColor(*B["shadow"], 0))
+        # Soft drop shadow under the disc (site: 0 5px 8px rgba(38,52,56,.125))
         p.setPen(Qt.NoPen)
-        p.setBrush(shadow)
-        p.drawEllipse(QPointF(c.x(), c.y() + 12), rim + 26, rim + 26)
+        for k in range(6):
+            p.setBrush(QColor(38, 52, 56, 7))
+            p.drawEllipse(QPointF(c.x(), c.y() + 5), rim + 1 + k * 1.6, rim + 1 + k * 1.6)
 
-        # Clear glass disc: blurred screen behind us, a faint milky tint, then a bevel.
-        self._glass(p, lambda path: path.addEllipse(c, rim * self.scale, rim * self.scale))
-        # the ring between petals is a slightly greyer glass, so the gaps read on white windows too
-        p.setBrush(QColor(120, 118, 130, int(42 - 20 * dark)))
+        # Frosted disc: blurred desktop + a cool grey tint, a 1px inner white line. The hole is
+        # left for the centre bubble.
+        disc = QPainterPath()
+        disc.addEllipse(c, rim, rim)
+        disc.addEllipse(c, hole, hole)
+        sdisc = QPainterPath()
+        sdisc.addEllipse(c, rim * self.scale, rim * self.scale)
+        self._glass(p, lambda path: path.addPath(sdisc))
+        p.setBrush(QColor(192, 201, 205, int(64 + 60 * dark)))
+        p.drawPath(disc)
+        p.setBrush(QColor(236, 240, 241, int(70 + 90 * dark)))
+        p.drawPath(disc)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(255, 255, 255, 85), 1.0))
+        p.drawEllipse(c, rim - 0.5, rim - 0.5)
+        p.setPen(QPen(QColor(93, 102, 102, 40), 1.0))
         p.drawEllipse(c, rim, rim)
-        p.setBrush(QColor(255, 255, 255, int(18 + 70 * dark)))
-        p.drawEllipse(c, rim, rim)
-        self._bevel(p, lambda path: path.addEllipse(c, rim, rim), rim, width=2.2)
-        # centre bubble: clear, slightly brighter, with its own bevel
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, int(30 + 60 * dark)))
-        p.drawEllipse(c, CENTER_R, CENTER_R)
-        self._bevel(p, lambda path: path.addEllipse(c, CENTER_R, CENTER_R), CENTER_R, width=1.8, inset=True)
+
+        # Centre bubble (white glass)
+        p.setPen(QPen(PETAL_EDGE, 1.1))
+        p.setBrush(QColor(255, 255, 255, int(205 + 30 * dark)))
+        p.drawEllipse(c, hole, hole)
 
         if not self.slices:
             r0, r1 = self._radii(0)
             ring = QPainterPath()
             ring.addEllipse(c, r1, r1)
             ring.addEllipse(c, r0, r0)
-            p.setPen(Qt.NoPen)
-            p.setBrush(PETAL_TOP)
+            p.setPen(QPen(PETAL_EDGE, 1.1))
+            p.setBrush(QColor(255, 255, 255, 190))
             p.drawPath(ring)
-            p.setPen(QColor(INK))
-            p.setFont(ui_font(10, QFont.DemiBold))
+            p.setPen(LABEL)
+            p.setFont(self._font(14))
             msg = "Move over the wheel" if self.paths is None else "No options for this file"
             p.drawText(QRectF(c.x() - r1, c.y() - (r0 + r1) / 2 - 12, 2 * r1, 24), Qt.AlignCenter, msg)
 
@@ -535,127 +601,126 @@ class Wheel(QWidget):
             r0, r1 = self._radii(ring)
             path = self.paths_cache.get(idx)
             if path is None:
-                path = petal_path(c, r0, r1, start, start + span, RING_GAP)
+                path = petal_path(c, r0, r1, start, start + span, RING_GAP, ro=30, ri=10)
                 self.paths_cache[idx] = path
             g = self.glow.get(idx, 0.0)
             br = path.boundingRect()
-            # 1. Lens: the backdrop seen through the petal is slightly magnified (refraction)
-            if self.backdrop is not None:
-                p.save()
-                p.setClipPath(path)
-                m = 1.07
-                p.translate(c)
-                p.scale(m, m)
-                p.translate(-c)
-                p.drawPixmap(0, 0, self.backdrop)
-                p.restore()
-            # 2. Body: mostly clear, a whisper of the brand tint; frost thickens on dark desktops
-            #    so the dark labels keep their contrast. The hovered petal fills with the accent.
-            gt = QColor(*GLASS_TOP.getRgb()[:3], int(62 + 125 * dark))
-            gb = QColor(*GLASS_BOTTOM.getRgb()[:3], int(40 + 135 * dark))
-            top = self._mix(gt, QColor(*HOT_TOP.getRgb()[:3], 235), g)
-            bottom = self._mix(gb, QColor(*HOT_BOTTOM.getRgb()[:3], 245), g)
-            grad = QLinearGradient(br.topLeft(), br.bottomLeft())
-            grad.setColorAt(0, top)
-            grad.setColorAt(1, bottom)
-            p.setPen(Qt.NoPen)
+            # Petal: milky white glass (site gradient #fff .8 -> #f3f6f7 .58 -> #f4f6f6 .75), the
+            # hovered one fills with the accent.
+            lift = 0.25 * dark
+            grad = QRadialGradient(br.center(), max(br.width(), br.height()) / 2)
+            # (alphas raised a little over the site's: our backdrop is a busy desktop, not a white page)
+            for at, col, a in ((0.0, (255, 255, 255), 0.86), (0.68, (245, 247, 248), 0.74), (1.0, (244, 246, 246), 0.82)):
+                base = QColor(*col, int(255 * min(1.0, a + lift)))
+                grad.setColorAt(at, self._mix(base, HOT, g))
+            p.setPen(QPen(self._mix(PETAL_EDGE, HOT_EDGE, g), 1.1))
             p.setBrush(grad)
             p.drawPath(path)
-            # 3. Sheen across the top third
-            sheen = QLinearGradient(br.topLeft(), QPointF(br.left(), br.top() + br.height() * 0.55))
-            sheen.setColorAt(0, QColor(255, 255, 255, int(70 * (1 - g) + 30)))
-            sheen.setColorAt(1, QColor(255, 255, 255, 0))
-            p.setBrush(sheen)
-            p.drawPath(path)
-            # 4. Bevel: bright edge towards the light (top-left), soft dark edge away from it
-            self._bevel(p, lambda pp, src=path: pp.addPath(src), max(br.width(), br.height()) / 2,
-                        width=1.6, rect=br, strength=1 - 0.5 * g)
 
             op = self.ops[idx]
             mid = start + span / 2
-            rm = (r0 + r1) / 2 + (4 if ring == 0 else 0)
-            t = _pt(c, rm, mid)
-            fg = self._mix(QColor(INK), QColor("#FFFFFF"), g)
-            box_w = max(64.0, min(RING_W - 6, 2 * rm * math.sin(math.radians(min(span, 140) / 2)) - 14))
+            rm = (r0 + r1) / 2
+            k = 1.0 if ring == 0 else 0.88
+            fg = self._mix(LABEL, QColor("#FFFFFF"), g)
+            box_w = max(64.0, min(RING_W - 4, 2 * rm * math.sin(math.radians(min(span, 140) / 2)) - 12))
             icon = icons.for_op(op)
             if op.badge and not icon:
+                t = _pt(c, rm, mid)
+                size = 20 if len(op.badge) <= 4 else 16
                 p.setPen(fg)
-                size = 13.5 if len(op.badge) <= 4 else 11.5
-                f = ui_font(size if ring == 0 else size - 1.5, QFont.Bold)
-                f.setLetterSpacing(QFont.PercentageSpacing, 103)
-                p.setFont(f)
-                p.drawText(QRectF(t.x() - box_w / 2, t.y() - 14, box_w, 28), Qt.AlignCenter, op.badge)
+                p.setFont(self._font(size * k, QFont.DemiBold, 0.5))
+                p.drawText(QRectF(t.x() - box_w / 2, t.y() - 16, box_w, 32), Qt.AlignCenter, op.badge)
             else:
-                isz = 25 if ring == 0 else 21
-                pm = icons.pixmap(icon or "sparkle", fg.name(), isz, dpr, 2.0)
-                p.drawPixmap(QPointF(t.x() - isz / 2, t.y() - isz - 1), pm)
-                f = ui_font(7.8 if ring == 0 else 7.0, QFont.Bold)
-                f.setLetterSpacing(QFont.AbsoluteSpacing, 0.7)
-                f.setCapitalization(QFont.AllUppercase)
-                p.setFont(f)
+                t = _pt(c, rm, mid)                            # icon stacked above its label
+                isz = round(24 * k)
+                pm = icons.pixmap(icon or "sparkle", fg.name(), isz, dpr, 1.6)
+                p.drawPixmap(QPointF(t.x() - isz / 2, t.y() - 12 * k - isz / 2), pm)
+                p.setFont(self._font(12 * k, QFont.DemiBold, 0.3, caps=True))
                 p.setPen(fg)
                 label = op.label.rstrip("…")
-                p.drawText(QRectF(t.x() - box_w / 2, t.y() + 2, box_w, 30),
+                p.drawText(QRectF(t.x() - box_w / 2, t.y() + 4 * k, box_w, 34),
                            Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, label)
 
         # Thumbnail in the hole
         if self.thumb is not None:
-            tw = 92.0
+            tw = 88.0
             pm = self.thumb
             k = tw / max(pm.width() / pm.devicePixelRatioF(), pm.height() / pm.devicePixelRatioF(), 1)
             w = pm.width() / pm.devicePixelRatioF() * k
             h = pm.height() / pm.devicePixelRatioF() * k
-            r = QRectF(c.x() - w / 2, c.y() - h / 2, w, h)
+            r = QRectF(c.x() - w / 2, c.y() - h / 2 - 6, w, h)
             clip = QPainterPath()
             clip.addRoundedRect(r, 10, 10)
             p.save()
             p.setClipPath(clip)
             p.drawPixmap(r, pm, QRectF(pm.rect()))
             p.restore()
-            p.setPen(QPen(QColor(255, 255, 255, 170), 1.5))
+            p.setPen(QPen(QColor(0, 0, 0, 30), 1))
             p.setBrush(Qt.NoBrush)
             p.drawPath(clip)
+        elif self.glyph:
+            gsz = 46
+            p.drawPixmap(QPointF(c.x() - gsz / 2, c.y() - gsz / 2 - 16),
+                         icons.pixmap(self.glyph, "#3A4246", gsz, dpr, 1.4))
 
-        # Centre pill: hovered option, else size / item count
-        if self.hover >= 0 and self.hover < len(self.ops):
+        # Centre pill: hovered option, else size / mode (site: white .72, 24px radius, soft shadow)
+        if 0 <= self.hover < len(self.ops):
             op = self.ops[self.hover]
-            pill_text = op.badge if (op.badge and not icons.for_op(op)) else op.label.rstrip("…")
-        elif self.paths:
-            pill_text = self.size_text
+            is_tool = not (op.badge and not icons.for_op(op))
+            pill_text = op.label.rstrip("…") if is_tool else op.badge
         else:
-            pill_text = dict(MODES)[self.mode]
-        f = ui_font(9.5, QFont.DemiBold)
+            is_tool = False
+            pill_text = self.size_text if self.paths else dict(MODES)[self.mode]
+        f = self._font(11.5, QFont.DemiBold, 0.3, caps=True) if is_tool else self._font(16, QFont.Medium, 0.5)
         p.setFont(f)
-        tw = min(p.fontMetrics().horizontalAdvance(pill_text) + 28, CENTER_R * 2 + 30)
-        pr = QRectF(c.x() - tw / 2, c.y() - 13, tw, 26)
+        tw = min(max(p.fontMetrics().horizontalAdvance(pill_text) + 30, 105), hole * 2 - 6)
+        ph = 40
+        py = c.y() - ph / 2 + (30 if (self.thumb is not None or self.glyph) else 0)
+        pr = QRectF(c.x() - tw / 2, py, tw, ph)
         p.setPen(Qt.NoPen)
-        p.setBrush(PILL)
-        p.drawRoundedRect(pr, 13, 13)
-        p.setPen(QColor(INK))
-        p.drawText(pr, Qt.AlignCenter, p.fontMetrics().elidedText(pill_text, Qt.ElideMiddle, int(tw) - 16))
+        p.setBrush(QColor(0, 0, 0, 10))
+        p.drawRoundedRect(pr.translated(0, 2), ph / 2, ph / 2)
+        p.setBrush(QColor(255, 255, 255, 235))
+        p.setPen(QPen(QColor(255, 255, 255, 180), 1))
+        p.drawRoundedRect(pr, ph / 2, ph / 2)
+        p.setPen(LABEL)
+        p.drawText(pr.adjusted(8, 0, -8, 0), Qt.AlignCenter,
+                   p.fontMetrics().elidedText(pill_text, Qt.ElideMiddle, int(tw) - 16))
 
-        # Mode chips (which key opens which wheel)
         p.resetTransform()
+        # Caption under the wheel ("Convert to PNG"), on a small frosted pill so it reads anywhere
+        cap = self._caption()
+        p.setFont(ui_font(9.5, QFont.Medium))
+        cw = min(p.fontMetrics().horizontalAdvance(cap) + 28, self.width() - 20)
+        cy = c.y() + rim * self.scale + 12
+        cr = QRectF(c.x() - cw / 2, cy, cw, 26)
+        self._glass(p, lambda path: path.addRoundedRect(cr, 13, 13))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(170 + 50 * dark)))
+        p.drawRoundedRect(cr, 13, 13)
+        p.setPen(CAPTION if dark < 0.5 else QColor(70, 80, 84))
+        p.drawText(cr, Qt.AlignCenter, p.fontMetrics().elidedText(cap, Qt.ElideMiddle, int(cw) - 20))
+
+        # Mode chips (which key opens which wheel), styled like the site's key caps
         f = ui_font(8.5, QFont.DemiBold)
         p.setFont(f)
         labels = [(m, f"{self.key_for(m)}  {t}") for m, t in MODES]
         widths = [p.fontMetrics().horizontalAdvance(t) + 24 for _, t in labels]
         total = sum(widths) + 4 * (len(widths) - 1) + 8
-        y = c.y() - (rim * self.scale) - 42
+        y = c.y() - (rim * self.scale) - 44
         group = QRectF(c.x() - total / 2, y, total, 32)
         self._glass(p, lambda path: path.addRoundedRect(group, 16, 16))
-        p.setPen(QPen(QColor(255, 255, 255, 150), 1))
-        dark = 1 - min(1.0, self.backdrop_luma / 0.55)
-        p.setBrush(self._mix(QColor(*RIM_FILL.getRgb()[:3], 95), QColor(*B["petal_top"][:3], 235), dark))
+        p.setPen(QPen(QColor(93, 102, 102, 50), 1))
+        p.setBrush(QColor(255, 255, 255, int(185 + 45 * dark)))
         p.drawRoundedRect(group, 16, 16)
         x = group.left() + 4
         for (m, t), w in zip(labels, widths):
             r = QRectF(x, y + 4, w, 24)
             active = m == self.mode
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(ACCENT) if active else QColor(255, 255, 255, 0))
+            p.setBrush(HOT if active else QColor(255, 255, 255, 0))
             p.drawRoundedRect(r, 12, 12)
-            p.setPen(QColor("#FFFFFF") if active else QColor(INK))
+            p.setPen(QColor("#FFFFFF") if active else LABEL)
             p.drawText(r, Qt.AlignCenter, t)
             x += w + 4
         p.end()

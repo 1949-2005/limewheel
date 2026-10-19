@@ -224,6 +224,9 @@ class SettingsDialog(Panel):
         self.reveal = QCheckBox("Open the folder when a job finishes")
         self.reveal.setChecked(data.get("reveal_when_done", False))
         b.addWidget(self.reveal)
+        self.sounds = QCheckBox("Play a soft tick when a petal lights up")
+        self.sounds.setChecked(data.get("sounds", True))
+        b.addWidget(self.sounds)
         self.startup = QCheckBox(f"Start {NAME} when I sign in")
         self.startup.setChecked(startup)
         b.addWidget(self.startup)
@@ -263,7 +266,7 @@ class SettingsDialog(Panel):
         return {"keys": {m: c.currentText().lower() for m, c in self.combos.items()},
                 "hotkey": self.hotkey.text().strip(), "explorer_only": self.explorer.isChecked(),
                 "hold_to_convert": self.hold.isChecked(), "hold_with_mouse": self.hold_mouse.isChecked(),
-                "reveal_when_done": self.reveal.isChecked(),
+                "reveal_when_done": self.reveal.isChecked(), "sounds": self.sounds.isChecked(),
                 "image_quality": self.quality.value()}
 
 

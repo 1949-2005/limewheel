@@ -13,7 +13,7 @@ BRANDS = {
         "hairline": "rgba(30, 70, 10, 0.16)",
         "panel_stops": [(0.0, "#E6FB8E"), (0.38, "#BFEA72"), (0.72, "#A9E2BC"), (1.0, "#C8D8F4")],
         "petal_top": (245, 252, 232, 244), "petal_bottom": (231, 245, 214, 244),
-        "hot_top": "#5E9E10", "hot_bottom": "#3F7A06",
+        "hot_top": "#5E9E10", "hot_bottom": "#3F7A06", "hot": "#4E9A06", "hot_edge": (52, 98, 20, 112),
         "rim": (170, 210, 118, 170), "hole": (128, 178, 78, 150), "pill": (246, 252, 236, 235),
         "menu_bg": "#F3FBE6", "shadow": (25, 60, 10),
         "unchecked": "rgba(40,90,20,0.55)",

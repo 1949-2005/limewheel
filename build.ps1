@@ -6,7 +6,7 @@ python -m pip install -r requirements.txt pyinstaller
 
 # Exe icon from the built-in lime mark
 python -c "import sys; from PySide6.QtWidgets import QApplication; a=QApplication(sys.argv); from limewheel.app import lime_pixmap; lime_pixmap(256).save('app_icon.png')"
-python -c "from PIL import Image; Image.open('app_icon.png').save('app.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+python -c "from pathlib import Path; from PIL import Image; from limewheel.ops.images import save_ico; save_ico(Image.open('app_icon.png'), Path('app.ico'), bmp_below=64)"
 Remove-Item app_icon.png
 
 $exclude = "PySide6.QtWebEngineCore","PySide6.QtWebEngineWidgets","PySide6.QtWebEngineQuick","PySide6.Qt3DCore",
