@@ -62,6 +62,58 @@ def _flatten(im: Image.Image) -> Image.Image:
     return im.convert("RGB") if im.mode not in ("RGB", "L") else im
 
 
+ICO_SIZES = (16, 24, 32, 48, 64, 256)        # what Windows actually asks for; 128 etc. are scaled from 256
+ICO_SMALL = (16, 32, 48)
+
+
+def _pad_square(im: Image.Image) -> Image.Image:
+    im = im.convert("RGBA")
+    side = max(im.size)
+    sq = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    sq.paste(im, ((side - im.width) // 2, (side - im.height) // 2), im)
+    return sq
+
+
+def _ico_frame_png(f: Image.Image) -> bytes:
+    """PNG bytes for one icon size. 48 px and up are reduced to the best 256 colours with
+    dithering (like pngquant) — visually the same at icon sizes, far fewer bytes. The frame is
+    stored back as 32-bit RGBA PNG: Windows' icon decoder rejects palette PNGs inside .ico."""
+    if f.width >= 48:
+        from PIL import features
+        method = Image.Quantize.LIBIMAGEQUANT if features.check_feature("libimagequant") else Image.Quantize.FASTOCTREE
+        f = f.quantize(colors=256, method=method, dither=Image.Dither.FLOYDSTEINBERG).convert("RGBA")
+    buf = io.BytesIO()
+    f.save(buf, "PNG", optimize=True)
+    return buf.getvalue()
+
+
+def save_ico(im: Image.Image, dst: Path, sizes=ICO_SIZES) -> Path:
+    """Write a Windows .ico: square frames, each size rendered from the source with Lanczos
+    (small sizes lightly sharpened) and stored as compressed PNG."""
+    import struct
+    from PIL import ImageFilter
+    sq = _pad_square(im)
+    side = sq.width
+    sizes = [s for s in sizes if s <= max(side, 16)] or [16]
+    if side < sizes[-1]:
+        sizes = [s for s in sizes if s <= side] or [16]
+    blobs = []
+    for s in sizes:
+        f = sq.resize((s, s), Image.Resampling.LANCZOS)
+        if s <= 64:
+            f = f.filter(ImageFilter.UnsharpMask(radius=0.8, percent=60, threshold=1))
+        blobs.append((s, _ico_frame_png(f)))
+    out = bytearray(struct.pack("<HHH", 0, 1, len(blobs)))
+    offset = 6 + 16 * len(blobs)
+    for s, data in blobs:
+        out += struct.pack("<BBBBHHII", s % 256, s % 256, 0, 0, 1, 32, len(data), offset)
+        offset += len(data)
+    for _, data in blobs:
+        out += data
+    dst.write_bytes(bytes(out))
+    return dst
+
+
 def save_image(im: Image.Image, dst: Path, ext: str, quality: int = 85) -> Path:
     fmt = TARGETS[ext]
     kw = {}
@@ -86,23 +138,7 @@ def save_image(im: Image.Image, dst: Path, ext: str, quality: int = 85) -> Path:
     if ext == "png":
         kw["optimize"] = True
     if ext == "ico":
-        # Windows wants square icons: centre the picture on a transparent square first,
-        # then render every size ourselves (Lanczos + a light sharpen on the small ones).
-        from PIL import ImageFilter
-        im = im.convert("RGBA")
-        side = max(im.size)
-        square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-        square.paste(im, ((side - im.width) // 2, (side - im.height) // 2), im)
-        sizes = [s for s in (16, 24, 32, 48, 64, 128, 256) if s <= max(side, 16)] or [16]
-        frames = []
-        for s in sizes:
-            f = square.resize((s, s), Image.Resampling.LANCZOS)
-            if s <= 64:
-                f = f.filter(ImageFilter.UnsharpMask(radius=0.8, percent=60, threshold=1))
-            frames.append(f)
-        big = frames[-1]
-        big.save(dst, "ICO", sizes=[(s, s) for s in sizes], append_images=frames[:-1])
-        return dst
+        return save_ico(im, dst, ICO_SIZES)
     if ext == "tiff":
         kw["compression"] = "tiff_lzw"
     if ext == "pdf":
@@ -119,6 +155,8 @@ def _q(ctx) -> int:
 
 def _convert(ext):
     def run(p: Path, opts, ctx):
+        if ext == "pdf":
+            return images_to_pdf([p], out_path(p, "pdf"))
         return save_image(open_image(p), out_path(p, ext), ext, _q(ctx))
     return run
 
@@ -126,6 +164,8 @@ def _convert(ext):
 for _ext in TARGETS:
     register(f"img.to.{_ext}", f"to {_ext.upper()}", "convert", IMG_IN, _convert(_ext),
              badge=_ext.upper(), skip_same=_ext)
+register("img.to.icosmall", "ICO small", "convert", IMG_IN,
+         lambda p, o, c: save_ico(open_image(p), out_path(p, "ico", "-small"), ICO_SMALL), badge="ICO S")
 
 
 # ------------------------------------------------------------------- tools
@@ -197,11 +237,51 @@ def _grayscale(im):
     return im.convert("LA") if "A" in im.getbands() else im.convert("L")
 
 
-def _merge_pdf(paths: list[Path], opts, ctx):
-    pages = [_flatten(open_image(p)) for p in paths]
-    dst = out_path(paths[0], "pdf", "-merged")
-    pages[0].save(dst, "PDF", save_all=True, append_images=pages[1:], resolution=150.0)
+A4 = (595.0, 842.0)          # points
+PDF_MARGIN = 36.0            # half an inch
+
+
+def _pdf_image_bytes(p: Path) -> tuple[bytes, int, int]:
+    """Image data for a PDF page with no quality loss where possible:
+    an upright JPEG is embedded byte-for-byte; anything else is stored lossless (PNG),
+    unless it's a photo where lossless would be far bigger — then high-quality JPEG."""
+    if ext_of(p) == "jpg":
+        with Image.open(p) as im:
+            if getattr(im, "n_frames", 1) == 1 and im.getexif().get(0x0112, 1) == 1 and im.mode in ("RGB", "L", "CMYK"):
+                return p.read_bytes(), im.width, im.height
+    im = open_image(p)
+    if getattr(im, "n_frames", 1) > 1:
+        im.seek(0)
+        im = im.copy()
+    im = im.convert("RGBA") if ("A" in im.getbands() or im.mode == "P") else im.convert("RGB")
+    png = io.BytesIO()
+    im.save(png, "PNG", optimize=True)
+    jpg = io.BytesIO()
+    _flatten(im).save(jpg, "JPEG", quality=92, optimize=True, subsampling=0)
+    data = png.getvalue() if len(png.getvalue()) <= 2.5 * len(jpg.getvalue()) else jpg.getvalue()
+    return data, im.width, im.height
+
+
+def images_to_pdf(paths: list[Path], dst: Path) -> Path:
+    """One A4 page per image (portrait or landscape to suit it), image fitted inside the margins."""
+    import fitz
+    doc = fitz.open()
+    for p in paths:
+        data, w, h = _pdf_image_bytes(p)
+        pw, ph = A4 if h >= w else (A4[1], A4[0])
+        page = doc.new_page(width=pw, height=ph)
+        k = min((pw - 2 * PDF_MARGIN) / w, (ph - 2 * PDF_MARGIN) / h)
+        iw, ih = w * k, h * k
+        x, y = (pw - iw) / 2, (ph - ih) / 2
+        page.insert_image(fitz.Rect(x, y, x + iw, y + ih), stream=data, keep_proportion=True)
+    doc.set_metadata({"title": paths[0].stem, "producer": "", "creator": ""})
+    doc.save(dst, garbage=3, deflate=True)
+    doc.close()
     return dst
+
+
+def _merge_pdf(paths: list[Path], opts, ctx):
+    return images_to_pdf(paths, out_path(paths[0], "pdf", "-merged"))
 
 
 def _make_gif(paths: list[Path], opts, ctx):
