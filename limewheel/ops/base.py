@@ -35,6 +35,7 @@ class Op:
     available: Callable[[], bool] | None = None
     skip_same: str | None = None    # hide when every input already has this extension
     exclude: frozenset | None = None  # hide when every input is one of these
+    max_files: int | None = None      # editors work on one file at a time
 
 
 REGISTRY: list[Op] = []
@@ -62,7 +63,7 @@ def ops_for(paths: list[Path], mode: str) -> list[Op]:
     exts = {ext_of(p) for p in paths}
     out = []
     for op in REGISTRY:
-        if op.mode != mode or len(paths) < op.min_files:
+        if op.mode != mode or len(paths) < op.min_files or (op.max_files and len(paths) > op.max_files):
             continue
         if op.exts is not None and not exts <= op.exts:
             continue

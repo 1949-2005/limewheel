@@ -8,7 +8,7 @@ import traceback
 from pathlib import Path
 
 from PySide6.QtCore import QLockFile, QObject, QPointF, QRunnable, Qt, QThreadPool, Signal
-from PySide6.QtGui import (QAction, QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap,
+from PySide6.QtGui import (QAction, QPen, QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap,
                            QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel,
                                QLineEdit, QMenu, QMessageBox, QSlider, QSystemTrayIcon, QWidget)
@@ -39,48 +39,60 @@ def custom_icon_path() -> Path | None:
 
 
 def lime_pixmap(size: int) -> QPixmap:
-    """Limewheel mark: a lime cross-section — rind, pith ring, ten segments, glossy highlight."""
-    import math
-    pm = QPixmap(size, size)
+    """Limewheel mark: the app's own wheel — six glossy lime petals around a hollow hub with a pointer."""
+    from .wheel import petal_path
+    S = 512
+    pm = QPixmap(S, S)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
-    s = size / 64
-    c = QPointF(32 * s, 32 * s)
-    p.setPen(Qt.NoPen)
-    rind = QRadialGradient(QPointF(26 * s, 24 * s), 36 * s)
-    rind.setColorAt(0.0, QColor("#7BC62D"))
-    rind.setColorAt(1.0, QColor("#2C6E0A"))
-    p.setBrush(rind)
-    p.drawEllipse(c, 30 * s, 30 * s)
-    p.setBrush(QColor("#F1FAD9"))                       # pith
-    p.drawEllipse(c, 26.5 * s, 26.5 * s)
-    flesh = QRadialGradient(c, 25 * s)
-    flesh.setColorAt(0.0, QColor("#E4F79A"))
-    flesh.setColorAt(0.7, QColor("#B6E04E"))
-    flesh.setColorAt(1.0, QColor("#93C93A"))
-    n, r_out, r_in, gap = 10, 24.0 * s, 3.4 * s, 1.5 * s
-    for k in range(n):
-        a0 = math.radians(k * 360 / n - 90)
-        a1 = math.radians((k + 1) * 360 / n - 90)
-        path = QPainterPath()
-        # a segment: thin wedge with a rounded outer edge, inset from its neighbours
-        da_in, da_out = gap / r_in, gap / r_out
-        pts_in = [QPointF(c.x() + r_in * math.cos(a0 + da_in * 2.2), c.y() + r_in * math.sin(a0 + da_in * 2.2)),
-                  QPointF(c.x() + r_in * math.cos(a1 - da_in * 2.2), c.y() + r_in * math.sin(a1 - da_in * 2.2))]
-        path.moveTo(pts_in[0])
-        steps = 12
-        for j in range(steps + 1):
-            a = a0 + da_out + (a1 - a0 - 2 * da_out) * j / steps
-            path.lineTo(QPointF(c.x() + r_out * math.cos(a), c.y() + r_out * math.sin(a)))
-        path.lineTo(pts_in[1])
-        path.closeSubpath()
-        p.setBrush(flesh)
+
+    def glossy(path, light, mid, deep, edge_w=5):
+        br = path.boundingRect()
+        g = QLinearGradient(br.topLeft(), br.bottomRight())
+        g.setColorAt(0, QColor(light))
+        g.setColorAt(0.5, QColor(mid))
+        g.setColorAt(1, QColor(deep))
+        p.setPen(Qt.NoPen)
+        p.setBrush(g)
         p.drawPath(path)
-    p.setBrush(QColor(255, 255, 255, 90))               # gloss
-    p.drawEllipse(QPointF(22 * s, 19 * s), 9 * s, 5 * s)
+        sheen = QLinearGradient(br.topLeft(), QPointF(br.left(), br.top() + br.height() * 0.55))
+        sheen.setColorAt(0, QColor(255, 255, 255, 120))
+        sheen.setColorAt(1, QColor(255, 255, 255, 0))
+        p.setBrush(sheen)
+        p.drawPath(path)
+        edge = QLinearGradient(br.topLeft(), br.bottomRight())
+        edge.setColorAt(0, QColor(255, 255, 255, 230))
+        edge.setColorAt(1, QColor(255, 255, 255, 40))
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(edge, edge_w))
+        p.drawPath(path)
+
+    c = QPointF(S / 2, S / 2)
+    disc = QRadialGradient(c, 236)
+    disc.setColorAt(0.7, QColor(205, 240, 150))
+    disc.setColorAt(1.0, QColor(150, 205, 80))
+    p.setPen(Qt.NoPen)
+    p.setBrush(disc)
+    p.drawEllipse(c, 236, 236)
+    for k in range(6):
+        a0 = k * 60 - 30
+        glossy(petal_path(c, 92, 220, a0, a0 + 60, 16, ro=34, ri=16), "#C8F26A", "#86C93A", "#4E9A12")
+    hub = QPainterPath()
+    hub.addEllipse(c, 70, 70)
+    glossy(hub, "#FFFFFF", "#EEF9DA", "#C9E7A2")
+    arrow = QPainterPath()
+    ax, ay = c.x() - 18, c.y() - 30
+    pts = [(0, 0), (0, 70), (17, 54), (30, 82), (43, 76), (30, 49), (54, 49)]
+    arrow.moveTo(QPointF(ax, ay))
+    for dx, dy in pts[1:]:
+        arrow.lineTo(QPointF(ax + dx, ay + dy))
+    arrow.closeSubpath()
+    p.setBrush(QColor("#1D3A08"))
+    p.setPen(QPen(QColor("#FFFFFF"), 5))
+    p.drawPath(arrow)
     p.end()
-    return pm
+    return pm if size == S else pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
 
 def make_icon(size: int = 64) -> QIcon:
@@ -203,6 +215,12 @@ class SettingsDialog(Panel):
         self.explorer = QCheckBox("Only for drags that start in Explorer or on the Desktop")
         self.explorer.setChecked(data.get("explorer_only", True))
         b.addWidget(self.explorer)
+        self.hold = QCheckBox("Touch or pen: hold, then drag to open the Convert wheel")
+        self.hold.setChecked(data.get("hold_to_convert", True))
+        b.addWidget(self.hold)
+        self.hold_mouse = QCheckBox("Mouse too: hold still for half a second, then drag")
+        self.hold_mouse.setChecked(data.get("hold_with_mouse", False))
+        b.addWidget(self.hold_mouse)
         self.startup = QCheckBox(f"Start {NAME} when I sign in")
         self.startup.setChecked(startup)
         b.addWidget(self.startup)
@@ -241,6 +259,7 @@ class SettingsDialog(Panel):
     def values(self) -> dict:
         return {"keys": {m: c.currentText().lower() for m, c in self.combos.items()},
                 "hotkey": self.hotkey.text().strip(), "explorer_only": self.explorer.isChecked(),
+                "hold_to_convert": self.hold.isChecked(), "hold_with_mouse": self.hold_mouse.isChecked(),
                 "image_quality": self.quality.value()}
 
 
@@ -493,6 +512,23 @@ def main(argv: list[str]) -> int:
     qapp.setApplicationName(APP_NAME)
     qapp.setQuitOnLastWindowClosed(False)
     qapp.setWindowIcon(make_icon())
+
+    if len(argv) >= 5 and argv[1] == "--run-op":
+        # Test hook for packaged builds: --run-op <op id> <file> <result.json> [options.json]
+        # Never shows a window: every failure is written to result.json.
+        import json
+        try:
+            from .ops import REGISTRY
+            op = next(o for o in REGISTRY if o.id == argv[2])
+            opts = json.loads(Path(argv[5]).read_text(encoding="utf-8-sig")) if len(argv) > 5 else {}
+            ctx = Ctx.__new__(Ctx)
+            ctx.app, ctx.settings = None, settings_mod.load()
+            outs = execute(op, [Path(argv[3]).resolve()], opts, ctx)
+            res = {"ok": True, "outputs": [str(o) for o in outs]}
+        except BaseException as e:
+            res = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        Path(argv[4]).write_text(json.dumps(res), encoding="utf-8")
+        return 0
 
     files = [Path(a).resolve() for a in argv[1:] if not a.startswith("--")]
     if files:

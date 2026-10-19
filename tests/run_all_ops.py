@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from PySide6.QtCore import QPointF  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 app = QApplication([])
@@ -70,6 +71,11 @@ def make_samples():
     import zipfile
     with zipfile.ZipFile(src / "bundle.zip", "w") as z:
         z.writestr("bundle/inner.txt", "inner")
+    (src / "letter.rtf").write_text(r"{\rtf1\ansi{\fonttbl\f0 Arial;}\f0\fs24 Hello \b bold\b0  world.\par Second line.\par}")
+    from limewheel.ops.docs import _write_ods
+    _write_ods([("Data", [["name", "qty"], ["apple", 3], ["pear", 5]])], src / "table.ods")
+    from limewheel.ops.ebooks import write_epub
+    write_epub(src / "novel.epub", "Novel", [("One", "<h1>One</h1><p>It <b>was</b> a dark night.</p>"), ("Two", "<h1>Two</h1><p>The end.</p>")])
 
 
 make_samples()
@@ -85,7 +91,7 @@ class FakeApp:
 ctx = Ctx.__new__(Ctx)
 ctx.app, ctx.settings = FakeApp(), FakeApp.settings
 
-SKIP = {"act.copy", "act.move", "act.terminal", "act.reveal"}  # need dialogs or open windows
+SKIP = {"act.copy", "act.move", "act.terminal", "act.reveal", "act.share"}  # need dialogs or open windows
 results = []
 samples = sorted(p for p in src.iterdir())
 groups = [[p] for p in samples] + [[src / "sample.png", src / "photo.jpg"], [src / "doc.pdf", src / "doc.pdf"],
@@ -97,7 +103,7 @@ for paths in groups:
                 continue
             if len(paths) > 1 and op.min_files < 2:
                 continue
-            case = work / "out" / f"{paths[0].stem}-{len(paths)}-{op.id}"
+            case = work / "out" / f"{paths[0].name}-{len(paths)}-{op.id}"
             case.mkdir(parents=True)
             local = []
             for p in paths:
@@ -123,7 +129,21 @@ for oid, p, opts in [("img.resize", "sample.png", {"pct": 50}),
                      ("vid.trim", "clip.mp4", {"start": 0.5, "end": 2.0}),
                      ("vid.split", "clip.mp4", {"parts": 2}),
                      ("aud.trim", "tone.wav", {"start": 1.0, "end": None}),
-                     ("aud.split", "tone.wav", {"parts": 3})]:
+                     ("aud.split", "tone.wav", {"parts": 3}),
+                     ("img.edit", "photo.jpg", {"values": {"Exposure": 50, "Contrast": 20, "Temperature": 30, "Saturation": 25, "Sharpness": 40}}),
+                     ("img.crop", "photo.jpg", {"box": (10, 10, 160, 120)}),
+                     ("img.background", "sample.png", {"color": "#FFFFFF", "pad": 0.1, "rounded": True, "shadow": True, "square": True}),
+                     ("img.redact", "photo.jpg", {"shapes": [{"tool": "blur", "pts": [QPointF(5, 5), QPointF(120, 90)], "color": "#111111", "width": 6},
+                                                             {"tool": "box", "pts": [QPointF(130, 10), QPointF(200, 60)], "color": "#111111", "width": 6}]}),
+                     ("img.annotate", "photo.jpg", {"shapes": [{"tool": "arrow", "pts": [QPointF(10, 150), QPointF(150, 40)], "color": "#F04A0E", "width": 6},
+                                                               {"tool": "text", "pts": [QPointF(20, 30)], "color": "#FFFFFF", "width": 4, "text": "Hi"}]}),
+                     ("vid.speed", "clip.mp4", {"speed": 2.0, "pitch": True, "mute": False}),
+                     ("aud.speed", "tone.wav", {"speed": 0.5, "pitch": True}),
+                     ("aud.channels", "tone.wav", {"mode": "Swap L/R", "left": 1.0, "right": 0.5}),
+                     ("vid.channels", "clip.mp4", {"mode": "Mono", "left": 1.0, "right": 1.0}),
+                     ("vid.crop", "clip.mp4", {"box": (21, 11, 201, 151)}),
+                     ("aud.bleep", "tone.wav", {"ranges": [(0.5, 1.0), (2.0, 2.5)], "sound": "tone"}),
+                     ("vid.bleep", "clip.mp4", {"ranges": [(1.0, 1.5)], "sound": "silence"})]:
     case = work / "out" / f"prompt-{oid}"
     case.mkdir(parents=True)
     dst = case / p
@@ -138,4 +158,5 @@ fails = [r for r in results if not r[0]]
 for ok, oid, name, info in results:
     print(f"{'OK  ' if ok else 'FAIL'} {oid:20} {name:14} {info[:110]}")
 print(f"\n{len(results) - len(fails)}/{len(results)} passed  (output in {work})")
+print("heavy modules loaded:", [m for m in ("numpy", "cv2", "pdf2docx") if m in sys.modules] or "none")
 sys.exit(1 if fails else 0)

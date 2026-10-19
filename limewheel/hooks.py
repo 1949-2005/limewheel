@@ -56,6 +56,8 @@ MODIFIER_VKS = {0x10: "shift", 0xA0: "shift", 0xA1: "shift",
                 0x12: "alt", 0xA4: "alt", 0xA5: "alt"}
 EXPLORER_CLASSES = {"CabinetWClass", "ExploreWClass", "Progman", "WorkerW"}
 DRAG_THRESHOLD = 8
+HOLD_MS = 450                    # touch: hold this long before dragging to open the Convert wheel
+MI_WP_SIGNATURE = 0xFF515700     # dwExtraInfo marker Windows sets on pen/touch-generated mouse input
 
 KEY_NAMES = {"space": 0x20, "enter": 0x0D, "tab": 0x09, "insert": 0x2D, "home": 0x24, "end": 0x23,
              **{f"f{i}": 0x6F + i for i in range(1, 13)}}
@@ -104,6 +106,8 @@ class Hooks:
         self._dragging = False
         self._origin = (0, 0)
         self._from_explorer = False
+        self._down_time = 0
+        self._touch = False
         self._held: set[int] = set()
         self._thread: threading.Thread | None = None
         self._tid = 0
@@ -157,6 +161,8 @@ class Hooks:
             if wparam == WM_LBUTTONDOWN:
                 self._down, self._dragging = True, False
                 self._origin = (info.pt.x, info.pt.y)
+                self._down_time = info.time
+                self._touch = (info.dwExtraInfo & 0xFFFFFF00) == MI_WP_SIGNATURE
                 try:
                     self._from_explorer = _class_at(info.pt) in EXPLORER_CLASSES
                 except Exception:
@@ -164,6 +170,13 @@ class Hooks:
             elif wparam == WM_MOUSEMOVE and self._down and not self._dragging:
                 if abs(info.pt.x - self._origin[0]) + abs(info.pt.y - self._origin[1]) > DRAG_THRESHOLD:
                     self._dragging = True
+                    # Touch / pen: press, hold briefly, then drag -> Convert wheel (no key needed).
+                    held = (info.time - self._down_time) & 0xFFFFFFFF
+                    hold_mouse = self.settings.get("hold_with_mouse", False)
+                    if ((self._touch and self.settings.get("hold_to_convert", True)) or hold_mouse) and held >= HOLD_MS \
+                            and not self.wheel_visible \
+                            and (self._from_explorer or not self.settings.get("explorer_only", True)):
+                        self.signals.modifier.emit(self.settings["keys"].get("convert", "shift"), True)
             elif wparam == WM_LBUTTONUP:
                 was = self._dragging
                 self._down = self._dragging = False

@@ -62,7 +62,27 @@ def probe(p: Path) -> dict:
     m = re.search(r"Duration: (\d+):(\d+):([\d.]+)", text)
     dur = int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3]) if m else 0.0
     video = bool(re.search(r"Stream #.*Video:", text)) and "attached pic" not in text.split("Video:")[-1][:200]
-    return {"duration": dur, "video": video, "audio": "Audio:" in text}
+    a = re.search(r"Audio:.*?, \d+ Hz, ([^,]+)", text)
+    layout = a[1].strip() if a else ""
+    m = re.match(r"(\d+)(?:\.(\d+))? channels", layout)
+    channels = (1 if layout == "mono" else 2 if layout.startswith("stereo") else
+                (int(m[1]) + int(m[2] or 0)) if m else 6 if layout.startswith("5.1") else 2 if a else 0)
+    v = re.search(r"Video:.*?, (\d{2,5})x(\d{2,5})", text)
+    size = (int(v[1]), int(v[2])) if v else (0, 0)
+    return {"duration": dur, "video": video, "audio": "Audio:" in text, "channels": channels, "size": size}
+
+
+def atempo_chain(speed: float) -> str:
+    """atempo only accepts 0.5–2.0 per stage; chain stages for anything outside."""
+    parts = []
+    while speed > 2.0:
+        parts.append("atempo=2.0")
+        speed /= 2.0
+    while speed < 0.5:
+        parts.append("atempo=0.5")
+        speed /= 0.5
+    parts.append(f"atempo={speed:.6g}")
+    return ",".join(parts)
 
 
 def _convert(ext: str, is_audio_target: bool):
@@ -182,7 +202,147 @@ def _thumbnail(p: Path, opts, ctx):
     return dst
 
 
+def _ask_speed(paths):
+    from ..dialogs import speed_dialog
+    info = probe(paths[0])
+    return speed_dialog(info["duration"], info["video"])
+
+
+def _speed(p: Path, opts, ctx):
+    s = opts["speed"]
+    info = probe(p)
+    ext = ext_of(p)
+    dst = out_path(p, ext, f"-{s:g}x")
+    if info["video"]:
+        args = ["-i", p, "-filter:v", f"setpts=PTS/{s:.6g}"]
+        if info["audio"] and not opts.get("mute"):
+            af = atempo_chain(s) if opts.get("pitch", True) else f"asetrate=44100*{s:.6g},aresample=44100"
+            args += ["-filter:a", af]
+        else:
+            args += ["-an"]
+        codec = VIDEO_ARGS.get(ext, H264)
+        ff(*args, *[c for c in codec if c not in ("-loop",)], dst)
+    else:
+        af = atempo_chain(s) if opts.get("pitch", True) else f"asetrate=44100*{s:.6g},aresample=44100"
+        ff("-i", p, "-vn", "-filter:a", af, *AUDIO_ARGS.get(ext, AUDIO_ARGS["mp3"]), dst)
+    return dst
+
+
+def _ask_channels(paths):
+    from ..dialogs import channels_dialog
+    return channels_dialog(probe(paths[0])["channels"] or 2)
+
+
+def _channels(p: Path, opts, ctx):
+    L, R = opts["left"], opts["right"]
+    mode = opts["mode"]
+    pan = {
+        "Stereo": f"pan=stereo|c0={L:.3g}*c0|c1={R:.3g}*c1",
+        "Mono": f"pan=mono|c0={0.5 * L:.3g}*c0+{0.5 * R:.3g}*c1",
+        "Swap L/R": f"pan=stereo|c0={L:.3g}*c1|c1={R:.3g}*c0",
+        "Left only": f"pan=stereo|c0={L:.3g}*c0|c1={L:.3g}*c0",
+        "Right only": f"pan=stereo|c0={R:.3g}*c1|c1={R:.3g}*c1",
+    }[mode]
+    af = f"aformat=channel_layouts=stereo,{pan}"
+    ext = ext_of(p)
+    dst = out_path(p, ext, f"-{mode.lower().replace(' ', '').replace('/', '')}")
+    if probe(p)["video"]:
+        ff("-i", p, "-map", "0:v?", "-map", "0:a", "-c:v", "copy", "-filter:a", af, "-c:a", "aac", "-b:a", "192k",
+           dst)
+    else:
+        ff("-i", p, "-vn", "-filter:a", af, *AUDIO_ARGS.get(ext, AUDIO_ARGS["mp3"]), dst)
+    return dst
+
+
+def _ask_vcrop(paths):
+    from PySide6.QtGui import QImage
+    from ..editors import crop_editor
+    p = paths[0]
+    info = probe(p)
+    t = min(1.0, info["duration"] / 10) if info["duration"] else 0
+    r = subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-ss", f"{t:.3f}", "-i", str(p),
+                        "-frames:v", "1", "-vf", "scale='min(1100,iw)':-2", "-f", "image2pipe", "-vcodec", "png", "-"],
+                       capture_output=True, creationflags=CREATE_NO_WINDOW)
+    img = QImage.fromData(r.stdout)
+    if img.isNull() or not info["size"][0]:
+        raise OpError("Couldn't read a frame from this video")
+    return crop_editor(img, info["size"], "Crop Video", "The crop applies to the whole video.")
+
+
+def _vcrop(p: Path, opts, ctx):
+    x, y, w, h = opts["box"]
+    w, h, x, y = w // 2 * 2, h // 2 * 2, x // 2 * 2, y // 2 * 2        # H.264 wants even sizes
+    dst = out_path(p, ext_of(p), "-cropped")
+    codec = VIDEO_ARGS.get(ext_of(p), H264)
+    ff("-i", p, "-filter:v", f"crop={w}:{h}:{x}:{y}", *codec, dst)
+    return dst
+
+
+def bleep_filter(ranges, sound: str, duration: float) -> str:
+    """filter_complex string: mute ranges and (optionally) lay a 1 kHz tone over them."""
+    expr = "+".join(f"between(t,{a:.3f},{b:.3f})" for a, b in ranges) or "0"
+    muted = f"[0:a]aformat=channel_layouts=stereo,volume=0:enable='{expr}'[m]"
+    if sound == "silence":
+        return muted.replace("[m]", "[out]")
+    tone = (f"sine=frequency=1000:sample_rate=48000:duration={duration + 1:.3f},aformat=channel_layouts=stereo,"
+            f"volume=0.35,volume=0:enable='not({expr})'[b]")
+    return f"{muted};{tone};[m][b]amix=inputs=2:duration=first:normalize=0[out]"
+
+
+def _bleep_tools():
+    import tempfile
+    import winsound
+    from ..brand import NAME
+    tmp = Path(tempfile.gettempdir()) / f"{NAME.lower()}-bleep-preview.wav"
+    state = {}
+
+    def make_preview(ranges, sound):
+        src, dur = state["src"], state["dur"]
+        winsound.PlaySound(None, 0)
+        ff("-i", src, "-t", "120", "-filter_complex", bleep_filter(ranges, sound, min(dur, 120)), "-map", "[out]",
+           "-c:a", "pcm_s16le", tmp)
+        return tmp
+
+    def play(f):
+        winsound.PlaySound(str(f), winsound.SND_FILENAME | winsound.SND_ASYNC)
+
+    def stop():
+        winsound.PlaySound(None, 0)
+
+    return state, make_preview, play, stop
+
+
+def _ask_bleep(paths):
+    from ..dialogs import bleep_dialog
+    info = probe(paths[0])
+    if not info["audio"] or not info["duration"]:
+        raise OpError("This file has no audio track")
+    state, make_preview, play, stop = _bleep_tools()
+    state.update(src=paths[0], dur=info["duration"])
+    return bleep_dialog(paths[0], info["duration"], make_preview, play, stop)
+
+
+def _bleep(p: Path, opts, ctx):
+    info = probe(p)
+    ext = ext_of(p)
+    dst = out_path(p, ext, "-bleeped")
+    fc = bleep_filter(opts["ranges"], opts["sound"], info["duration"])
+    if info["video"]:
+        ff("-i", p, "-filter_complex", fc, "-map", "0:v", "-map", "[out]", "-c:v", "copy", "-c:a", "aac",
+           "-b:a", "192k", dst)
+    else:
+        ff("-i", p, "-filter_complex", fc, "-map", "[out]", *AUDIO_ARGS.get(ext, AUDIO_ARGS["mp3"]), dst)
+    return dst
+
+
 VID = VIDEO_IN - {"gif"}
+register("aud.bleep", "Bleep…", "tools", AUDIO_IN, _bleep, prompt=_ask_bleep, max_files=1)
+register("vid.bleep", "Bleep…", "tools", VID, _bleep, prompt=_ask_bleep, max_files=1)
+register("vid.crop", "Crop…", "tools", VID, _vcrop, prompt=_ask_vcrop, max_files=1)
+register("vid.speed", "Speed…", "tools", VID, _speed, prompt=_ask_speed)
+register("aud.speed", "Speed…", "tools", AUDIO_IN, _speed, prompt=_ask_speed)
+register("aud.channels", "Channels…", "tools", AUDIO_IN, _channels, prompt=_ask_channels)
+register("vid.channels", "Channels…", "tools", VID, _channels, prompt=_ask_channels)
 register("vid.compress", "Compress", "tools", VID, _compress_video)
 register("vid.trim", "Trim…", "tools", VID, _trim, prompt=_ask_trim)
 register("vid.split", "Split…", "tools", VID, _split, prompt=_ask_split)

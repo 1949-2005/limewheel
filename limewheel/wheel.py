@@ -33,6 +33,9 @@ HOT_TOP = QColor(B["hot_top"])
 HOT_BOTTOM = QColor(B["hot_bottom"])
 RIM_FILL = QColor(*B["rim"])
 PILL = QColor(*B["pill"])
+# Glass petals: the brand's petal tint, but see-through so the frosted backdrop shows.
+GLASS_TOP = QColor(*B["petal_top"][:3], 118)
+GLASS_BOTTOM = QColor(*B["petal_bottom"][:3], 96)
 IMAGE_EXTS = {"jpg", "png", "webp", "bmp", "gif", "tiff", "ico", "svg", "avif", "heic"}
 VIDEO_EXTS = {"mp4", "mov", "mkv", "webm", "avi", "wmv", "m4v", "flv", "mpg", "mpeg", "3gp", "ts"}
 
@@ -62,6 +65,35 @@ class _VideoThumb(QRunnable):
             self.signals.ready.emit(self.token, data)
         except RuntimeError:
             pass
+
+
+def frosted_backdrop(x: int, y: int, size: int) -> QPixmap | None:
+    """Screenshot what is behind the wheel and blur it: the 'frosted glass' the wheel sits on.
+    Windows has no smooth, round blur-behind for layered windows, so we make our own."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QGuiApplication
+    try:
+        from PIL import Image, ImageEnhance, ImageFilter
+        from .editors import pil_to_qimage, qimage_to_pil
+    except Exception:
+        return None
+    centre = QPoint(x + size // 2, y + size // 2)
+    screen = QGuiApplication.screenAt(centre) or QGuiApplication.primaryScreen()
+    geo = screen.geometry()
+    shot = screen.grabWindow(0, x - geo.x(), y - geo.y(), size, size)
+    if shot.isNull():
+        return None
+    im = qimage_to_pil(shot.toImage()).convert("RGB")
+    w, h = im.size
+    small = im.resize((max(1, w // 5), max(1, h // 5)), Image.Resampling.BILINEAR)
+    small = small.filter(ImageFilter.GaussianBlur(4))
+    small = ImageEnhance.Color(small).enhance(1.6)            # vibrancy, like macOS materials
+    small = ImageEnhance.Brightness(small).enhance(1.1)
+    pm = QPixmap.fromImage(pil_to_qimage(small.resize((w, h), Image.Resampling.BICUBIC)))
+    pm.setDevicePixelRatio(shot.devicePixelRatio())
+    from PIL import ImageStat
+    luma = ImageStat.Stat(small.convert("L")).mean[0] / 255          # 0 dark .. 1 light
+    return pm, luma
 
 
 def _pt(c: QPointF, r: float, deg: float) -> QPointF:
@@ -154,6 +186,8 @@ class Wheel(QWidget):
         self.keyboard = False
         self.dropped = False
         self.thumb: QPixmap | None = None
+        self.backdrop: QPixmap | None = None
+        self.backdrop_luma = 1.0
         self._thumb_token = 0
         self._thumb_jobs: set = set()
         self.size_text = ""
@@ -190,6 +224,9 @@ class Wheel(QWidget):
     def _show_at(self, pos):
         # Always centred on the cursor: the drop has to land on us.
         self.move(pos.x() - SIZE // 2, pos.y() - SIZE // 2)
+        if not self.isVisible():
+            got = frosted_backdrop(pos.x() - SIZE // 2, pos.y() - SIZE // 2, SIZE)
+            self.backdrop, self.backdrop_luma = got if got else (None, 1.0)
         self.glow.clear()
         self.show()
         self.raise_()
@@ -403,6 +440,44 @@ class Wheel(QWidget):
             QTimer.singleShot(100, lambda: self.hide() if not self.isActiveWindow() else None)
 
     # -------------------------------------------------------------- paint
+    def _glass(self, p: QPainter, build):
+        """Paint the blurred backdrop inside a shape (in window coordinates, unscaled)."""
+        if self.backdrop is None:
+            return
+        path = QPainterPath()
+        build(path)
+        p.save()
+        p.resetTransform()
+        p.setClipPath(path)
+        p.drawPixmap(0, 0, self.backdrop)
+        p.restore()
+
+    @staticmethod
+    def _bevel(p: QPainter, build, radius: float, width: float = 2.0, inset: bool = False,
+               rect: QRectF | None = None, strength: float = 1.0):
+        """Thick-glass edge: a white highlight fading from top-left to bottom-right, and a faint
+        dark line just inside on the bottom-right (or the reverse for a recessed shape)."""
+        path = QPainterPath()
+        build(path)
+        r = rect or path.boundingRect()
+        light = QLinearGradient(r.topLeft(), r.bottomRight())
+        hi, lo = QColor(255, 255, 255, int(235 * strength)), QColor(255, 255, 255, int(45 * strength))
+        light.setColorAt(0.0, lo if inset else hi)
+        light.setColorAt(0.55, QColor(255, 255, 255, int(90 * strength)))
+        light.setColorAt(1.0, hi if inset else lo)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(light, width))
+        p.drawPath(path)
+        shade = QLinearGradient(r.topLeft(), r.bottomRight())
+        shade.setColorAt(0.0, QColor(0, 0, 0, int(28 * strength) if inset else 0))
+        shade.setColorAt(0.6, QColor(0, 0, 0, 0))
+        shade.setColorAt(1.0, QColor(0, 0, 0, 0 if inset else int(32 * strength)))
+        p.save()
+        p.setClipPath(path)
+        p.setPen(QPen(shade, width * 2.4))
+        p.drawPath(path)
+        p.restore()
+
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -418,20 +493,29 @@ class Wheel(QWidget):
         outer = self._outer()
         rim = outer + RIM
 
-        # Soft shadow + frosted rim disc
-        shadow = QRadialGradient(QPointF(c.x(), c.y() + 10), rim + 30)
-        shadow.setColorAt(0.80, QColor(*B["shadow"], 70))
+        dark = 1 - min(1.0, self.backdrop_luma / 0.55)      # 0 on light desktops, 1 on very dark ones
+
+        # Very soft contact shadow (glass barely casts one)
+        shadow = QRadialGradient(QPointF(c.x(), c.y() + 12), rim + 26)
+        shadow.setColorAt(0.84, QColor(*B["shadow"], 45))
         shadow.setColorAt(1.0, QColor(*B["shadow"], 0))
         p.setPen(Qt.NoPen)
         p.setBrush(shadow)
-        p.drawEllipse(QPointF(c.x(), c.y() + 10), rim + 30, rim + 30)
-        p.setBrush(RIM_FILL)
-        p.setPen(QPen(QColor(255, 255, 255, 120), 1.2))
+        p.drawEllipse(QPointF(c.x(), c.y() + 12), rim + 26, rim + 26)
+
+        # Clear glass disc: blurred screen behind us, a faint milky tint, then a bevel.
+        self._glass(p, lambda path: path.addEllipse(c, rim * self.scale, rim * self.scale))
+        # the ring between petals is a slightly greyer glass, so the gaps read on white windows too
+        p.setBrush(QColor(120, 118, 130, int(42 - 20 * dark)))
         p.drawEllipse(c, rim, rim)
-        # inner hole ring
-        p.setBrush(QColor(*B["hole"]))
-        p.setPen(QPen(QColor(255, 255, 255, 110), 5))
+        p.setBrush(QColor(255, 255, 255, int(18 + 70 * dark)))
+        p.drawEllipse(c, rim, rim)
+        self._bevel(p, lambda path: path.addEllipse(c, rim, rim), rim, width=2.2)
+        # centre bubble: clear, slightly brighter, with its own bevel
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, int(30 + 60 * dark)))
         p.drawEllipse(c, CENTER_R, CENTER_R)
+        self._bevel(p, lambda path: path.addEllipse(c, CENTER_R, CENTER_R), CENTER_R, width=1.8, inset=True)
 
         if not self.slices:
             r0, r1 = self._radii(0)
@@ -454,15 +538,38 @@ class Wheel(QWidget):
                 path = petal_path(c, r0, r1, start, start + span, RING_GAP)
                 self.paths_cache[idx] = path
             g = self.glow.get(idx, 0.0)
-            top = self._mix(PETAL_TOP, HOT_TOP, g)
-            bottom = self._mix(PETAL_BOTTOM, HOT_BOTTOM, g)
             br = path.boundingRect()
+            # 1. Lens: the backdrop seen through the petal is slightly magnified (refraction)
+            if self.backdrop is not None:
+                p.save()
+                p.setClipPath(path)
+                m = 1.07
+                p.translate(c)
+                p.scale(m, m)
+                p.translate(-c)
+                p.drawPixmap(0, 0, self.backdrop)
+                p.restore()
+            # 2. Body: mostly clear, a whisper of the brand tint; frost thickens on dark desktops
+            #    so the dark labels keep their contrast. The hovered petal fills with the accent.
+            gt = QColor(*GLASS_TOP.getRgb()[:3], int(62 + 125 * dark))
+            gb = QColor(*GLASS_BOTTOM.getRgb()[:3], int(40 + 135 * dark))
+            top = self._mix(gt, QColor(*HOT_TOP.getRgb()[:3], 235), g)
+            bottom = self._mix(gb, QColor(*HOT_BOTTOM.getRgb()[:3], 245), g)
             grad = QLinearGradient(br.topLeft(), br.bottomLeft())
             grad.setColorAt(0, top)
             grad.setColorAt(1, bottom)
+            p.setPen(Qt.NoPen)
             p.setBrush(grad)
-            p.setPen(QPen(QColor(255, 255, 255, int(150 * (1 - g) + 60)), 1))
             p.drawPath(path)
+            # 3. Sheen across the top third
+            sheen = QLinearGradient(br.topLeft(), QPointF(br.left(), br.top() + br.height() * 0.55))
+            sheen.setColorAt(0, QColor(255, 255, 255, int(70 * (1 - g) + 30)))
+            sheen.setColorAt(1, QColor(255, 255, 255, 0))
+            p.setBrush(sheen)
+            p.drawPath(path)
+            # 4. Bevel: bright edge towards the light (top-left), soft dark edge away from it
+            self._bevel(p, lambda pp, src=path: pp.addPath(src), max(br.width(), br.height()) / 2,
+                        width=1.6, rect=br, strength=1 - 0.5 * g)
 
             op = self.ops[idx]
             mid = start + span / 2
@@ -536,8 +643,10 @@ class Wheel(QWidget):
         total = sum(widths) + 4 * (len(widths) - 1) + 8
         y = c.y() - (rim * self.scale) - 42
         group = QRectF(c.x() - total / 2, y, total, 32)
-        p.setPen(QPen(QColor(255, 255, 255, 120), 1))
-        p.setBrush(RIM_FILL)
+        self._glass(p, lambda path: path.addRoundedRect(group, 16, 16))
+        p.setPen(QPen(QColor(255, 255, 255, 150), 1))
+        dark = 1 - min(1.0, self.backdrop_luma / 0.55)
+        p.setBrush(self._mix(QColor(*RIM_FILL.getRgb()[:3], 95), QColor(*B["petal_top"][:3], 235), dark))
         p.drawRoundedRect(group, 16, 16)
         x = group.left() + 4
         for (m, t), w in zip(labels, widths):

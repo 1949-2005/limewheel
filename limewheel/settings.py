@@ -17,6 +17,10 @@ DEFAULTS = {
     "explorer_only": True,
     # Quality used for lossy image output (JPG/WebP/AVIF/HEIC).
     "image_quality": 85,
+    # Touch screens / pens: press, hold briefly, then drag to open the Convert wheel.
+    "hold_to_convert": True,
+    # Same gesture with a mouse (off by default).
+    "hold_with_mouse": False,
 }
 
 

@@ -257,4 +257,268 @@ def fields_dialog(title: str, fields: list[tuple[str, str]], note: str = "") -> 
     return [e.text().strip() for e in edits]
 
 
-__all__ = ["trim_dialog", "slider_dialog", "fields_dialog", "Panel", "QCheckBox"]
+class Segmented(QWidget):
+    """Row of pill buttons, one selected (like the Mono | Stereo control in the reference)."""
+    changed = Signal(int)
+
+    def __init__(self, options: list[str], index: int = 0):
+        super().__init__()
+        from PySide6.QtWidgets import QButtonGroup, QPushButton
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(4)
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+        for i, text in enumerate(options):
+            b = QPushButton(text)
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet(f"QPushButton:checked {{ background: {ACCENT}; color: white; font-weight: 600; }}")
+            self.group.addButton(b, i)
+            h.addWidget(b)
+        self.group.button(index).setChecked(True)
+        self.group.idClicked.connect(self.changed.emit)
+
+    def index(self) -> int:
+        return self.group.checkedId()
+
+
+SPEEDS = [0.25, 0.5, 0.75, 1.25, 1.5, 2.0, 4.0]
+
+
+def speed_dialog(duration: float, has_video: bool) -> dict | None:
+    dlg = Panel("Change Speed", width=470)
+    dlg.body_layout.addWidget(_label("Playback speed"))
+    seg = Segmented([f"{s:g}×" for s in SPEEDS], SPEEDS.index(2.0))
+    dlg.body_layout.addWidget(seg)
+    note = _label("", "hint")
+    dlg.body_layout.addWidget(note)
+    pitch = QCheckBox("Keep the voice pitch natural")
+    pitch.setChecked(True)
+    dlg.body_layout.addWidget(pitch)
+    mute = QCheckBox("Remove the sound")
+    if has_video:
+        dlg.body_layout.addWidget(mute)
+
+    def upd(i):
+        s = SPEEDS[i]
+        note.setText(f"New length ≈ {fmt(duration / s)}" if duration else "")
+
+    seg.changed.connect(upd)
+    upd(seg.index())
+    if not dlg.run():
+        return None
+    return {"speed": SPEEDS[seg.index()], "pitch": pitch.isChecked(), "mute": mute.isChecked()}
+
+
+CHANNEL_MODES = ["Stereo", "Mono", "Swap L/R", "Left only", "Right only"]
+
+
+def channels_dialog(channels: int) -> dict | None:
+    dlg = Panel("Convert Audio Channels", width=470)
+    dlg.body_layout.addWidget(_label(f"Source: {'mono' if channels == 1 else f'{channels} channels'}", "hint"))
+    seg = Segmented(CHANNEL_MODES, 1 if channels >= 2 else 0)
+    dlg.body_layout.addWidget(seg)
+    sliders = {}
+    for side in ("Left", "Right"):
+        val = _label("100%", "hint")
+        val.setMinimumWidth(44)
+        s = QSlider(Qt.Horizontal)
+        s.setRange(0, 200)
+        s.setValue(100)
+        s.setAccessibleName(f"{side} volume")
+        s.valueChanged.connect(lambda v, l=val: l.setText(f"{v}%"))
+        name_l = _label(f"{side} volume")
+        name_l.setMinimumWidth(96)
+        row = _row(name_l, s, val, stretch_at=None)
+        row.layout().setStretch(1, 1)
+        dlg.body_layout.addWidget(row)
+        sliders[side] = s
+    if not dlg.run():
+        return None
+    return {"mode": CHANNEL_MODES[seg.index()], "left": sliders["Left"].value() / 100,
+            "right": sliders["Right"].value() / 100}
+
+
+BG_COLORS = [("White", "#FFFFFF"), ("Black", "#111111"), ("Light grey", "#ECECEC"),
+             ("Accent", None), ("Transparent", "transparent"), ("Custom…", "custom")]
+
+
+def background_dialog() -> dict | None:
+    from PySide6.QtWidgets import QColorDialog
+    dlg = Panel("Add Background", width=470)
+    dlg.body_layout.addWidget(_label("Background colour"))
+    seg = Segmented([n for n, _ in BG_COLORS], 0)
+    dlg.body_layout.addWidget(seg)
+    chosen = {"custom": "#FFD54F"}
+    swatch = _label("", "hint")
+    dlg.body_layout.addWidget(swatch)
+
+    def pick(i):
+        name, val = BG_COLORS[i]
+        if val == "custom":
+            c = QColorDialog.getColor(QColor(chosen["custom"]), dlg, "Background colour")
+            if c.isValid():
+                chosen["custom"] = c.name()
+            swatch.setText(f"Custom colour {chosen['custom']}")
+        else:
+            swatch.setText("Keeps transparency (PNG)" if val == "transparent" else "")
+
+    seg.changed.connect(pick)
+    pad_val = _label("8%", "hint")
+    pad = QSlider(Qt.Horizontal)
+    pad.setRange(0, 40)
+    pad.setValue(8)
+    pad.setAccessibleName("Padding")
+    pad.valueChanged.connect(lambda v: pad_val.setText(f"{v}%"))
+    row = _row(_label("Padding"), pad, pad_val, stretch_at=None)
+    row.layout().setStretch(1, 1)
+    dlg.body_layout.addWidget(row)
+    rounded = QCheckBox("Round the image corners")
+    shadow = QCheckBox("Soft shadow under the image")
+    shadow.setChecked(True)
+    square = QCheckBox("Make the canvas square")
+    for w in (rounded, shadow, square):
+        dlg.body_layout.addWidget(w)
+    if not dlg.run():
+        return None
+    name, val = BG_COLORS[seg.index()]
+    color = ACCENT if val is None else chosen["custom"] if val == "custom" else val
+    return {"color": color, "pad": pad.value() / 100, "rounded": rounded.isChecked(),
+            "shadow": shadow.isChecked(), "square": square.isChecked()}
+
+
+class BleepWave(QWidget):
+    """Waveform where dragging adds bleep ranges; click a range then Delete to remove it."""
+    changed = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumHeight(120)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName("Bleep ranges")
+        self.peaks: list[float] = []
+        self.ranges: list[list[float]] = []
+        self.selected = -1
+        self._new: list[float] | None = None
+
+    def set_peaks(self, peaks):
+        self.peaks = peaks
+        self.update()
+
+    def _v(self, x):
+        return min(1.0, max(0.0, x / max(1, self.width())))
+
+    def mousePressEvent(self, e):
+        v = self._v(e.position().x())
+        for i, (a, b) in enumerate(self.ranges):
+            if a <= v <= b:
+                self.selected = i
+                self.update()
+                return
+        self.selected = -1
+        self._new = [v, v]
+
+    def mouseMoveEvent(self, e):
+        if self._new:
+            self._new[1] = self._v(e.position().x())
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        if self._new:
+            a, b = sorted(self._new)
+            if b - a > 0.003:
+                self.ranges.append([a, b])
+                self.ranges.sort()
+                self.changed.emit()
+            self._new = None
+            self.update()
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and 0 <= self.selected < len(self.ranges):
+            self.ranges.pop(self.selected)
+            self.selected = -1
+            self.changed.emit()
+            self.update()
+        else:
+            super().keyPressEvent(e)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        bg = QPainterPath()
+        bg.addRoundedRect(r, 12, 12)
+        p.fillPath(bg, QColor(255, 255, 255, 60))
+        mid = r.center().y()
+        n = len(self.peaks) or BUCKETS
+        bw = self.width() / n
+        spans = self.ranges + ([sorted(self._new)] if self._new else [])
+        for i, (a, b) in enumerate(spans):
+            x0, x1 = a * self.width(), b * self.width()
+            p.fillRect(QRectF(x0, r.top(), max(2, x1 - x0), r.height()),
+                       QColor(INK) if i == self.selected else QColor(ACCENT))
+        for i in range(n):
+            v = self.peaks[i] if self.peaks else 0.12
+            h = max(2.0, v * (r.height() - 20) / 2)
+            x = i * bw + bw / 2
+            inside = any(a * self.width() <= x <= b * self.width() for a, b in spans)
+            p.setPen(QPen(QColor("#FFFFFF") if inside else QColor(*B['wave_off'], 160), max(1.2, bw * 0.55),
+                          Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(x, mid - h), QPointF(x, mid + h))
+        p.end()
+
+
+def bleep_dialog(path: Path, duration: float, make_preview, play, stop) -> dict | None:
+    dlg = Panel("Bleep Audio", apply_text="Save Bleeped Copy", width=600)
+    count = _label("", "hint")
+    dlg.body_layout.addWidget(_row(_label("Bleeps"), count))
+    wave = BleepWave()
+    dlg.body_layout.addWidget(wave)
+    times = _label("", "mono")
+    times.setWordWrap(True)
+    dlg.body_layout.addWidget(times)
+    tip = _label("Drag across the waveform to add a bleep. Click one and press Delete to remove it.", "hint")
+    tip.setWordWrap(True)
+    dlg.body_layout.addWidget(tip)
+    sound = Segmented(["Beep tone", "Silence"], 0)
+    dlg.body_layout.addWidget(_row(_label("Replace with"), sound, stretch_at=None))
+    from PySide6.QtWidgets import QPushButton
+    from . import icons
+    dpr = dlg.devicePixelRatioF()
+    orig = QPushButton("Original")
+    withb = QPushButton("With bleeps")
+    stop_b = QPushButton("Stop")
+    for b, ic in ((orig, "play"), (withb, "play"), (stop_b, "stop")):
+        b.setIcon(icons.pixmap(ic, INK, 12, dpr))
+    dlg.body_layout.addWidget(_row(_label("Preview"), orig, withb, stop_b, stretch_at=1))
+
+    def secs():
+        return [(a * duration, b * duration) for a, b in wave.ranges]
+
+    def upd():
+        n = len(wave.ranges)
+        count.setText(str(n))
+        times.setText("  ".join(f"{fmt(a)}–{fmt(b)}" for a, b in secs()) or "No bleeps yet.")
+        dlg.apply_btn.setEnabled(n > 0)
+        withb.setEnabled(n > 0)
+
+    wave.changed.connect(upd)
+    upd()
+    orig.clicked.connect(lambda: play(make_preview([], "tone")))
+    withb.clicked.connect(lambda: play(make_preview(secs(), "tone" if sound.index() == 0 else "silence")))
+    stop_b.clicked.connect(stop)
+    job = _Peaks(path)
+    job.setAutoDelete(False)
+    job.signals.ready.connect(wave.set_peaks)
+    dlg._job = job
+    QThreadPool.globalInstance().start(job)
+    ok = dlg.run()
+    stop()
+    if not ok or not wave.ranges:
+        return None
+    return {"ranges": secs(), "sound": "tone" if sound.index() == 0 else "silence"}
+
+
+__all__ = ["bleep_dialog", "trim_dialog", "slider_dialog", "fields_dialog", "speed_dialog", "channels_dialog",
+           "background_dialog", "Segmented", "Panel", "QCheckBox"]

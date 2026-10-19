@@ -13,7 +13,7 @@ $payload = Join-Path $stage "payload.zip"
 python -I -c "
 import sys, zipfile, pathlib
 src, out = pathlib.Path(sys.argv[1]), sys.argv[2]
-with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+with zipfile.ZipFile(out, 'w', zipfile.ZIP_LZMA) as z:
     for f in src.rglob('*'):
         if f.is_file(): z.write(f, f.relative_to(src).as_posix())
 " (Resolve-Path "dist\Limewheel") $payload

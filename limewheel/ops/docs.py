@@ -219,11 +219,11 @@ def _pdf_images(ext):
         try:
             if doc.page_count == 1:
                 dst = out_path(p, ext)
-                doc[0].get_pixmap(dpi=150).save(dst)
+                doc[0].get_pixmap(dpi=300).save(dst)
                 return dst
             folder = out_dir(p, "-pages")
             for i, page in enumerate(doc, 1):
-                page.get_pixmap(dpi=150).save(folder / f"{p.stem}-p{i:03d}.{ext}")
+                page.get_pixmap(dpi=300).save(folder / f"{p.stem}-p{i:03d}.{ext}")
             return folder
         finally:
             doc.close()
@@ -268,13 +268,91 @@ def _pdf_to_html(p, opts, ctx):
 
 
 def _pdf_to_docx(p, opts, ctx):
-    from pdf2docx import Converter
-    dst = out_path(p, "docx")
-    cv = Converter(str(p))
+    """Rebuild a PDF as an editable Word file: headings, bold/italic runs, colours, tables and images."""
+    import io
+    from docx import Document
+    from docx.enum.text import WD_BREAK
+    from docx.shared import Pt, RGBColor, Emu
+
+    fitz = _fitz()
+    pdf = fitz.open(p)
+    doc = Document()
+    sec = doc.sections[0]
     try:
-        cv.convert(str(dst))
-    finally:
-        cv.close()
+        r0 = pdf[0].rect
+        sec.page_width, sec.page_height = Emu(int(r0.width * 12700)), Emu(int(r0.height * 12700))
+    except Exception:
+        pass
+    usable = sec.page_width - sec.left_margin - sec.right_margin
+    # body font size = most common span size in the document
+    sizes: dict[float, int] = {}
+    for page in pdf:
+        for b in page.get_text("dict")["blocks"]:
+            for l in b.get("lines", []):
+                for s in l["spans"]:
+                    k = round(s["size"], 1)
+                    sizes[k] = sizes.get(k, 0) + len(s["text"])
+    body = max(sizes, key=sizes.get) if sizes else 11.0
+
+    for pi, page in enumerate(pdf):
+        if pi:
+            doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+        tables = []
+        try:
+            tables = page.find_tables().tables
+        except Exception:
+            pass
+        tboxes = [fitz.Rect(t.bbox) for t in tables]
+        items = []                               # (y, kind, payload)
+        for t, box in zip(tables, tboxes):
+            items.append((box.y0, "table", t))
+        for b in page.get_text("dict")["blocks"]:
+            rect = fitz.Rect(b["bbox"])
+            if any(rect.intersects(tb) and (rect & tb).get_area() > 0.6 * rect.get_area() for tb in tboxes):
+                continue
+            items.append((rect.y0, "image" if b["type"] == 1 else "text", b))
+        for _, kind, b in sorted(items, key=lambda x: x[0]):
+            if kind == "table":
+                rows = [[("" if c is None else str(c)) for c in row] for row in b.extract()]
+                if not rows:
+                    continue
+                tbl = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
+                tbl.style = "Table Grid"
+                for i, row in enumerate(rows):
+                    for j, c in enumerate(row):
+                        tbl.cell(i, j).text = c
+                continue
+            if kind == "image":
+                try:
+                    w = min(usable, Emu(int((b["bbox"][2] - b["bbox"][0]) * 12700)))
+                    doc.add_picture(io.BytesIO(b["image"]), width=w)
+                except Exception:
+                    pass
+                continue
+            spans = [s for l in b["lines"] for s in l["spans"] if s["text"].strip()]
+            if not spans:
+                continue
+            size = max(s["size"] for s in spans)
+            level = 1 if size >= body * 1.6 else 2 if size >= body * 1.3 else 3 if size >= body * 1.12 else 0
+            par = doc.add_heading(level=level) if level else doc.add_paragraph()
+            for li, l in enumerate(b["lines"]):
+                for s in l["spans"]:
+                    text = s["text"]
+                    if not text:
+                        continue
+                    run = par.add_run(text)
+                    run.bold = bool(s["flags"] & 16) or None
+                    run.italic = bool(s["flags"] & 2) or None
+                    if not level:
+                        run.font.size = Pt(round(s["size"] * 2) / 2)
+                    col = s.get("color", 0)
+                    if col:
+                        run.font.color.rgb = RGBColor((col >> 16) & 255, (col >> 8) & 255, col & 255)
+                if li < len(b["lines"]) - 1:
+                    par.add_run(" ")
+    pdf.close()
+    dst = out_path(p, "docx")
+    doc.save(dst)
     return dst
 
 
@@ -490,11 +568,62 @@ register("html.docx", "to DOCX", "convert", HTML,
 
 # --------------------------------------------------------------- spreadsheets
 
-SHEETS = frozenset("xlsx xls csv tsv".split())
+SHEETS = frozenset("xlsx xls csv tsv ods".split())
+
+
+def _read_ods(p: Path) -> list[tuple[str, list[list]]]:
+    from odf import teletype
+    from odf.opendocument import load
+    from odf.table import Table, TableCell, TableRow
+    from odf.text import P
+    out = []
+    for t in load(str(p)).spreadsheet.getElementsByType(Table):
+        rows = []
+        for tr in t.getElementsByType(TableRow):
+            row = []
+            for tc in tr.getElementsByType(TableCell):
+                rep = min(int(tc.getAttribute("numbercolumnsrepeated") or 1), 512)
+                vtype, val = tc.getAttribute("valuetype"), tc.getAttribute("value")
+                text = "\n".join(teletype.extractText(x) for x in tc.getElementsByType(P))
+                v = (float(val) if vtype in ("float", "percentage", "currency") and val else text)
+                if isinstance(v, float) and v.is_integer():
+                    v = int(v)
+                row += [v] * rep
+            while row and row[-1] in ("", None):
+                row.pop()
+            rows += [row] * min(int(tr.getAttribute("numberrowsrepeated") or 1), 512)
+        while rows and not rows[-1]:
+            rows.pop()
+        out.append((t.getAttribute("name") or "Sheet", rows))
+    return out
+
+
+def _write_ods(sheets, dst: Path) -> Path:
+    from odf.opendocument import OpenDocumentSpreadsheet
+    from odf.table import Table, TableCell, TableRow
+    from odf.text import P
+    doc = OpenDocumentSpreadsheet()
+    for name, rows in sheets:
+        t = Table(name=str(name)[:31] or "Sheet")
+        for row in rows:
+            tr = TableRow()
+            for v in row:
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    tc = TableCell(valuetype="float", value=v)
+                else:
+                    tc = TableCell(valuetype="string")
+                tc.addElement(P(text="" if v is None else str(v)))
+                tr.addElement(tc)
+            t.addElement(tr)
+        doc.spreadsheet.addElement(t)
+    doc.save(str(dst))
+    return dst
 
 
 def read_sheets(p: Path) -> list[tuple[str, list[list]]]:
     e = ext_of(p)
+    if e == "ods":
+        return _read_ods(p)
     if e == "xlsx":
         from openpyxl import load_workbook
         wb = load_workbook(p, read_only=True, data_only=True)
@@ -520,6 +649,8 @@ def read_sheets(p: Path) -> list[tuple[str, list[list]]]:
 def _sheet_to(ext):
     def run(p: Path, opts, ctx):
         sheets = read_sheets(p)
+        if ext == "ods":
+            return _write_ods(sheets, out_path(p, "ods"))
         if ext == "xlsx":
             from openpyxl import Workbook
             wb = Workbook()
@@ -561,7 +692,7 @@ def _sheet_to(ext):
     return run
 
 
-for _ext in ("xlsx", "csv", "tsv", "json", "html"):
+for _ext in ("xlsx", "ods", "csv", "tsv", "json", "html"):
     register(f"sheet.{_ext}", f"to {_ext.upper()}", "convert", SHEETS, _sheet_to(_ext),
              badge=_ext.upper(), skip_same=_ext)
 register("sheet.pdf", "to PDF", "convert", SHEETS, _sheet_to("pdf"), badge="PDF", main_thread=True,

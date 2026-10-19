@@ -34,8 +34,21 @@ CREATE_NO_WINDOW = 0x08000000
 
 # ---------------------------------------------------------------- install steps
 
+def _running() -> bool:
+    r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {APP}.exe", "/NH"], capture_output=True, text=True,
+                       creationflags=CREATE_NO_WINDOW)
+    return f"{APP}.exe".lower() in r.stdout.lower()
+
+
 def stop_running():
+    """Close a running copy and wait until Windows has actually released its files."""
+    import time
     subprocess.run(["taskkill", "/IM", f"{APP}.exe", "/F"], capture_output=True, creationflags=CREATE_NO_WINDOW)
+    for _ in range(40):
+        if not _running():
+            break
+        time.sleep(0.25)
+    time.sleep(0.5)
 
 
 def extract(dest: Path, progress=lambda f: None):
@@ -44,8 +57,16 @@ def extract(dest: Path, progress=lambda f: None):
         total = sum(i.file_size for i in items) or 1
         done = 0
         dest.mkdir(parents=True, exist_ok=True)
+        import time
         for i in items:
-            z.extract(i, dest)
+            for attempt in range(20):            # a file can stay locked briefly after the old app exits
+                try:
+                    z.extract(i, dest)
+                    break
+                except PermissionError:
+                    if attempt == 19:
+                        raise
+                    time.sleep(0.5)
             done += i.file_size
             progress(done / total)
 
@@ -121,8 +142,29 @@ def register(dest: Path, desktop_icon: bool, startup: bool):
                 pass
 
 
+def remove_previous(dest: Path):
+    """Updating: clear the old version's program files so nothing stale is left behind.
+    Only touches a folder that is clearly ours (contains our exe or our _internal bundle)."""
+    import shutil
+    import time
+    if not dest.exists() or not ((dest / f"{APP}.exe").exists() or (dest / "_internal").is_dir()):
+        return
+    for _ in range(20):                       # the old exe may need a moment to exit
+        try:
+            shutil.rmtree(dest / "_internal", ignore_errors=False) if (dest / "_internal").exists() else None
+            break
+        except OSError:
+            time.sleep(0.5)
+    for name in (f"{APP}.exe", "icon.png", "uninstall.ps1"):
+        try:
+            (dest / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def install(dest: Path, desktop_icon: bool, startup: bool, progress=lambda f: None):
     stop_running()
+    remove_previous(dest)
     extract(dest, progress)
     register(dest, desktop_icon, startup)
 
@@ -256,7 +298,12 @@ def main() -> int:
     args = sys.argv[1:]
     if "--silent" in args:
         dest = Path(args[args.index("--dir") + 1]) if "--dir" in args else DEFAULT_DIR
-        install(dest, "--no-desktop" not in args, "--startup" in args)
+        try:
+            install(dest, "--no-desktop" not in args, "--startup" in args)
+        except BaseException:                    # silent: report via exit code + a log, never a popup
+            import traceback
+            (Path(os.environ["TEMP"]) / f"{APP}-setup-error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+            return 1
         if "--no-launch" not in args:
             launch(dest)
         return 0

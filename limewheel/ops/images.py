@@ -199,13 +199,102 @@ def _make_gif(paths: list[Path], opts, ctx):
     return dst
 
 
+def _ask_background(paths):
+    from ..dialogs import background_dialog
+    return background_dialog()
+
+
+def _background(p: Path, opts, ctx):
+    from PIL import ImageColor, ImageDraw, ImageFilter
+    im = open_image(p)
+    if getattr(im, "n_frames", 1) > 1:
+        im.seek(0)
+        im = im.copy()
+    im = im.convert("RGBA")
+    w, h = im.size
+    pad = int(round(max(w, h) * opts["pad"]))
+    cw, ch = w + 2 * pad, h + 2 * pad
+    if opts.get("square"):
+        cw = ch = max(cw, ch)
+    transparent = opts["color"] == "transparent"
+    canvas = Image.new("RGBA", (cw, ch), (0, 0, 0, 0) if transparent else ImageColor.getrgb(opts["color"]) + (255,))
+    ox, oy = (cw - w) // 2, (ch - h) // 2
+    radius = int(min(w, h) * 0.06) if opts.get("rounded") else 0
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=radius, fill=255)
+    mask = Image.composite(im.getchannel("A"), Image.new("L", (w, h), 0), mask)
+    if opts.get("shadow") and pad:
+        blur = max(4, pad // 3)
+        sh = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+        shadow_mask = Image.new("L", (cw, ch), 0)
+        shadow_mask.paste(mask, (ox, oy + blur // 2))
+        sh.putalpha(shadow_mask.filter(ImageFilter.GaussianBlur(blur)).point(lambda v: int(v * 0.45)))
+        canvas = Image.alpha_composite(canvas, sh)
+    canvas.paste(im, (ox, oy), mask)
+    ext = "png" if transparent or _same_ext(p) in ("gif", "ico", "svg") else _same_ext(p)
+    return save_image(canvas, out_path(p, ext, "-bg"), ext, _q(ctx))
+
+
+def _first_frame(p: Path) -> Image.Image:
+    im = open_image(p)
+    if getattr(im, "n_frames", 1) > 1:
+        im.seek(0)
+        im = im.copy()
+    return im
+
+
+def _ask_edit(paths):
+    from ..editors import photo_editor
+    return photo_editor(_first_frame(paths[0]))
+
+
+def _edit(p: Path, opts, ctx):
+    from ..editors import adjust
+    ext = _same_ext(p)
+    return save_image(adjust(_first_frame(p), opts["values"]), out_path(p, ext, "-edited"), ext, _q(ctx))
+
+
+def _ask_crop(paths):
+    from ..editors import crop_editor, pil_to_qimage, preview_copy
+    im = _first_frame(paths[0])
+    small, _ = preview_copy(im)
+    return crop_editor(pil_to_qimage(small), im.size, "Crop Image")
+
+
+def _crop(p: Path, opts, ctx):
+    x, y, w, h = opts["box"]
+    ext = _same_ext(p)
+    return save_image(_first_frame(p).crop((x, y, x + w, y + h)), out_path(p, ext, "-cropped"), ext, _q(ctx))
+
+
+def _ask_markup(mode):
+    def prompt(paths):
+        from ..editors import markup_editor
+        return markup_editor(_first_frame(paths[0]), mode)
+    return prompt
+
+
+def _markup(suffix):
+    def run(p: Path, opts, ctx):
+        from ..editors import render_markup
+        ext = _same_ext(p)
+        return save_image(render_markup(_first_frame(p), opts["shapes"]), out_path(p, ext, suffix), ext, _q(ctx))
+    return run
+
+
+register("img.edit", "Edit…", "tools", IMG_IN, _edit, prompt=_ask_edit, max_files=1)
+register("img.crop", "Crop…", "tools", IMG_IN, _crop, prompt=_ask_crop, max_files=1)
+register("img.redact", "Redact…", "tools", IMG_IN, _markup("-redacted"), prompt=_ask_markup("redact"),
+         max_files=1, main_thread=True)
+register("img.annotate", "Annotate…", "tools", IMG_IN, _markup("-annotated"), prompt=_ask_markup("annotate"),
+         max_files=1, main_thread=True)
+register("img.background", "Add BG…", "tools", IMG_IN, _background, prompt=_ask_background)
 register("img.compress", "Compress", "tools", IMG_IN, _compress)
 register("img.resize", "Resize…", "tools", IMG_IN, _resize, prompt=_ask_resize)
 register("img.rotate", "Rotate 90°", "tools", IMG_IN,
          _simple(lambda im: im.transpose(Image.Transpose.ROTATE_270), "-rotated"))
 register("img.flip", "Flip", "tools", IMG_IN,
          _simple(lambda im: im.transpose(Image.Transpose.FLIP_LEFT_RIGHT), "-flipped"))
-register("img.square", "Crop square", "tools", IMG_IN, _simple(_square, "-square"))
 register("img.gray", "Grayscale", "tools", IMG_IN, _simple(_grayscale, "-gray"))
 register("img.strip", "Strip metadata", "tools", IMG_IN, _simple(_strip, "-clean"))
 register("img.mergepdf", "Merge to PDF", "tools", IMG_IN, _merge_pdf, batch=True, min_files=2)

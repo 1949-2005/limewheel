@@ -83,7 +83,7 @@ def _repack(fmt):
                     for f in Path(tmp).rglob("*"):
                         z.write(f, f.relative_to(tmp).as_posix())
             else:
-                make_tar(items, dst, "w:gz")
+                make_tar(items, dst, "w" if fmt == "tar" else "w:gz")
         return dst
     return run
 
@@ -93,6 +93,20 @@ register("arc.zip", "Compress ZIP", "convert", None,
 register("arc.tgz", "Compress TAR.GZ", "convert", None,
          lambda ps, o, c: make_tar(ps, _archive_name(ps, "tar.gz"), "w:gz"), badge="TGZ", batch=True,
          exclude=ARCHIVES)
+register("arc.tar", "Compress TAR", "convert", None,
+         lambda ps, o, c: make_tar(ps, _archive_name(ps, "tar"), "w"), badge="TAR", batch=True,
+         exclude=ARCHIVES)
+
+
+def _gzip(p: Path, opts, ctx):
+    dst = unique(p.with_name(p.name + ".gz"))
+    with open(p, "rb") as src, gzip.open(dst, "wb", compresslevel=6) as out:
+        shutil.copyfileobj(src, out, 1 << 20)
+    return dst
+
+
+register("arc.gz", "Compress GZIP", "convert", None, _gzip, badge="GZ", exclude=ARCHIVES | {"<dir>"})
 register("arc.extract", "Extract", "convert", ARCHIVES, lambda p, o, c: extract(p), badge="Open")
+register("arc.totar", "to TAR", "convert", ARCHIVES - {"tar", "gz"}, _repack("tar"), badge="TAR")
 register("arc.tozip", "to ZIP", "convert", ARCHIVES - {"zip", "gz"}, _repack("zip"), badge="ZIP")
 register("arc.totgz", "to TAR.GZ", "convert", ARCHIVES - {"tgz", "gz"}, _repack("tar.gz"), badge="TGZ")
