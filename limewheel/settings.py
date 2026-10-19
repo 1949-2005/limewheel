@@ -25,6 +25,8 @@ DEFAULTS = {
     "reveal_when_done": False,
     # Soft tick when a petal lights up.
     "sounds": True,
+    # Folders whose new files are converted automatically (see watch.py).
+    "watch_folders": [],
 }
 
 

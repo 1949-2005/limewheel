@@ -23,7 +23,9 @@ $cases = @(
   @("epub.pdf", "novel.epub", ""), @("epub.docx", "novel.epub", ""),
   @("sheet.ods", "table.csv", ""), @("sheet.xlsx", "table.ods", ""), @("sheet.csv", "book.xlsx", ""),
   @("rtf.docx", "letter.rtf", ""), @("rtf.pdf", "letter.rtf", ""),
-  @("arc.tar", "notes.md", ""), @("arc.gz", "notes.md", ""), @("arc.extract", "bundle.zip", "")
+  @("arc.tar", "notes.md", ""), @("arc.gz", "notes.md", ""), @("arc.extract", "bundle.zip", ""),
+  @("img.preset", "photo.jpg", '{"preset": "ig-post"}'), @("img.preset", "flower.jpg", '{"preset": "email"}'),
+  @("vid.preset", "clip.mp4", '{"preset": "reel"}')
 )
 $pass = 0
 $n = 0

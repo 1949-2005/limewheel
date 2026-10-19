@@ -1,6 +1,8 @@
 """Panels for the 1.2 tools: Compress to size, Metadata, Reorganize PDF, Collage, QR results."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QIcon, QPixmap, QTransform
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGridLayout,
@@ -262,3 +264,141 @@ def codes_dialog(results: list[tuple[str, str]], source: str):
             row.append(op)
         dlg.body_layout.addWidget(_row(*row, stretch_at=len(row)))
     dlg.run()
+
+
+# ------------------------------------------------------------ Presets
+
+def presets_dialog(presets: list[dict], count: int = 1) -> str | None:
+    """Pick one preset; returns its id. Double-click or Enter applies."""
+    from . import icons
+    dlg = Panel("Presets", apply_text="Make", width=440)
+    dlg.body_layout.addWidget(_label("Ready-made sizes and formats" + (f" for {count} files" if count > 1 else ""), "hint"))
+    lst = QListWidget()
+    lst.setIconSize(QSize(22, 22))
+    lst.setAccessibleName("Presets")
+    dpr = dlg.devicePixelRatioF()
+    for pr in presets:
+        it = QListWidgetItem(f"{pr['name']}\n{pr.get('spec', '')}")
+        it.setData(Qt.UserRole, pr["id"])
+        it.setIcon(QIcon(icons.pixmap("cat-video" if pr.get("kind") == "video" else "image", "#3A4246", 22, dpr, 1.6)))
+        it.setSizeHint(QSize(0, 50))
+        lst.addItem(it)
+    lst.setCurrentRow(0)
+    lst.setMinimumHeight(min(len(presets), 7) * 54 + 6)
+    lst.itemDoubleClicked.connect(lambda *_: dlg.accept())
+    dlg.body_layout.addWidget(lst)
+    if not dlg.run() or lst.currentItem() is None:
+        return None
+    return lst.currentItem().data(Qt.UserRole)
+
+# ------------------------------------------------------------ Watch folders
+
+def _rule_dialog(actions: list[tuple[str, str]], rule: dict | None = None) -> dict | None:
+    from PySide6.QtWidgets import QFileDialog
+    dlg = Panel("Add Watch Folder" if rule is None else "Edit Watch Folder", apply_text="Save", width=520)
+    rule = dict(rule or {"folder": "", "action": "op:img.to.webp", "subfolder": "Converted", "enabled": True})
+    dlg.body_layout.addWidget(_label("Folder to watch"))
+    folder = QLineEdit(rule["folder"])
+    folder.setPlaceholderText(r"C:\Users\you\Downloads")
+    folder.setAccessibleName("Folder to watch")
+    browse = QPushButton("Browse…")
+
+    def pick():
+        d = QFileDialog.getExistingDirectory(dlg, "Folder to watch", folder.text() or str(Path.home()))
+        if d:
+            folder.setText(str(Path(d)))
+    browse.clicked.connect(pick)
+    dlg.body_layout.addWidget(_row(folder, browse, stretch_at=0))
+    dlg.body_layout.addWidget(_label("When a new file arrives"))
+    combo = QComboBox()
+    combo.setAccessibleName("Action")
+    combo.setMaxVisibleItems(18)
+    for key, label in actions:
+        combo.addItem(label, key)
+    i = combo.findData(rule["action"])
+    combo.setCurrentIndex(max(0, i))
+    dlg.body_layout.addWidget(combo)
+    dlg.body_layout.addWidget(_label("Save results in this subfolder"))
+    sub = QLineEdit(rule.get("subfolder") or "Converted")
+    sub.setAccessibleName("Results subfolder")
+    dlg.body_layout.addWidget(sub)
+    err = _label("Pick a folder that exists.", "section")
+    err.hide()
+    dlg.body_layout.addWidget(err)
+    dlg.body_layout.addWidget(_label("Files already in the folder are left alone. Other file types are ignored.", "hint"))
+    dlg.apply_btn.clicked.disconnect()
+
+    def check():
+        ok = bool(folder.text().strip()) and Path(folder.text().strip()).is_dir()
+        err.setVisible(not ok)
+        if ok:
+            dlg.accept()
+    dlg.apply_btn.clicked.connect(check)
+    if not dlg.run():
+        return None
+    name = "".join(ch for ch in sub.text().strip() if ch not in '<>:"/\\|?*') or "Converted"
+    return {"folder": str(Path(folder.text().strip())), "action": combo.currentData(), "subfolder": name,
+            "enabled": rule.get("enabled", True)}
+
+
+def watch_dialog(rules: list[dict]) -> list[dict] | None:
+    """Manage watch folders; returns the new list of rules (None = cancelled)."""
+    from .watch import actions, describe
+    acts = actions()
+    rules = [dict(r) for r in rules]
+    dlg = Panel("Watch Folders", apply_text="Save", width=560)
+    dlg.body_layout.addWidget(_label("New files in these folders are converted automatically while "
+                                     "the app is running.", "hint"))
+    lst = QListWidget()
+    lst.setAccessibleName("Watch folders")
+    lst.setMinimumHeight(220)
+    empty = _label("No watch folders yet. Click Add to pick one.", "hint")
+
+    def refresh(select: int = 0):
+        lst.clear()
+        for r in rules:
+            it = QListWidgetItem(describe(r))
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if r.get("enabled", True) else Qt.Unchecked)
+            it.setSizeHint(QSize(0, 52))
+            lst.addItem(it)
+        if rules:
+            lst.setCurrentRow(min(select, len(rules) - 1))
+        empty.setVisible(not rules)
+        edit.setEnabled(bool(rules))
+        remove.setEnabled(bool(rules))
+
+    def on_check(it):
+        rules[lst.row(it)]["enabled"] = it.checkState() == Qt.Checked
+    lst.itemChanged.connect(on_check)
+
+    def add():
+        r = _rule_dialog(acts)
+        if r:
+            rules.append(r)
+            refresh(len(rules) - 1)
+
+    def edit_rule(*_):
+        i = lst.currentRow()
+        if 0 <= i < len(rules):
+            r = _rule_dialog(acts, rules[i])
+            if r:
+                rules[i] = r
+                refresh(i)
+
+    def remove_rule():
+        i = lst.currentRow()
+        if 0 <= i < len(rules):
+            rules.pop(i)
+            refresh(i)
+
+    add_b, edit, remove = QPushButton("Add…"), QPushButton("Edit…"), QPushButton("Remove")
+    add_b.clicked.connect(add)
+    edit.clicked.connect(edit_rule)
+    remove.clicked.connect(remove_rule)
+    lst.itemDoubleClicked.connect(edit_rule)
+    dlg.body_layout.addWidget(lst)
+    dlg.body_layout.addWidget(empty)
+    dlg.body_layout.addWidget(_row(add_b, edit, remove, QWidget(), stretch_at=3))
+    refresh()
+    return rules if dlg.run() else None

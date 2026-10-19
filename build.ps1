@@ -26,5 +26,11 @@ $qt = "dist\Limewheel\_internal\PySide6"
 $drop = "opengl32sw.dll","Qt6Quick*.dll","Qt6Qml*.dll","Qt6Pdf*.dll","Qt6VirtualKeyboard*.dll","Qt6OpenGL.dll","QtQuick*.pyd","QtQml.pyd","QtPdf*.pyd","QtOpenGL*.pyd","QtNetwork.pyd","Qt6Network.dll"
 $drop | ForEach-Object { Get-ChildItem $qt -Filter $_ -File -ErrorAction SilentlyContinue | Remove-Item -Force }
 Remove-Item "$qt\translations", "$qt\qml" -Recurse -Force -ErrorAction SilentlyContinue
+# python-docx only needs templates\default.docx; its unzipped copy uses names MSIX reserves ([Content_Types].xml, _rels)
+Remove-Item "dist\Limewheel\_internal\docx\templates\default-docx-template" -Recurse -Force -ErrorAction SilentlyContinue
+
+# Explorer right-click menu add-on (the DLL launches Limewheel.exe next to it)
+if (-not (Test-Path shell\out\LimewheelShell.dll)) { & .\shell\build_shell.ps1 }
+Copy-Item shell\out\LimewheelShell.dll dist\Limewheel\ -Force
 
 Write-Host "`nBuilt: $PSScriptRoot\dist\Limewheel\Limewheel.exe"

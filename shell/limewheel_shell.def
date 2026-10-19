@@ -1,0 +1,4 @@
+LIBRARY LimewheelShell
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE

@@ -33,6 +33,12 @@ click **More info → Run anyway**.
 | <kbd>Ctrl</kbd> | **Tools** | **Compress to an exact size** (images, video, audio, PDF) · **Metadata** viewer/editor for everything · **Edit photo** (exposure, contrast, highlights, temperature…), **Crop** (images and video), **Redact**, **Annotate**, **Add background**, **Collage**, **Read QR / barcodes**, Compress, Resize, Rotate, Flip, Grayscale · **Trim**, **Split**, **Merge**, **Speed**, **Audio channels**, **Bleep**, Mute, Snapshot, Normalize · PDF **reorganize pages**, merge, split, compress, rotate, extract images |
 | <kbd>Alt</kbd> | **Actions** | **Share** (Nearby Share, Mail, Phone Link…), Float, Copy to, Move to, Copy Path, Terminal, Show in Explorer |
 
+- **Presets** (Tools wheel → Presets…): one drop makes a file ready for Instagram post / square / story,
+  YouTube thumbnail, Web, Email (under 1 MB), Print A4 at 300 DPI, and for videos Reel/TikTok/Short,
+  YouTube 1080p, Discord (under 10 MB) and Email (under 25 MB).
+- **Watch folders** (tray icon → Watch folders…): new files in a folder are converted automatically
+  (any conversion, tool or preset) into a subfolder, e.g. every screenshot → WebP.
+- **Right-click menu:** right-click files in Explorer → **Limewheel** → Convert… / Tools… / Actions….
 - The wheel stays open after you let go of the key. Tap another key to switch wheels, drop on the centre to cancel.
 - Touch screen or pen: press, hold briefly, then drag to open the Convert wheel.
 - No drag needed: select files in Explorer and press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd>, then use the arrow keys and Enter.
@@ -60,6 +66,9 @@ python main.py                          # run from source
 powershell -ExecutionPolicy Bypass -File build_installer.ps1   # -> dist\LimewheelSetup.exe + .sha256
 python tests/run_all_ops.py             # converts sample files with every operation
 ```
+
+The Explorer right-click menu is a small C++ add-on in `shell/` (built with Zig from PyPI by `shell\build_shell.ps1`).
+`packaging\build_msix.ps1` makes a Microsoft Store (MSIX) package; see [packaging/README.md](packaging/README.md).
 
 Office documents (DOC/XLS/PPT → PDF, slides → images) use Microsoft Office or LibreOffice when installed. Media conversions use the
 ffmpeg build bundled by [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg).

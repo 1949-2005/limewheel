@@ -49,15 +49,8 @@ def _encode(im: Image.Image, ext: str, q: int) -> bytes:
     return buf.getvalue()
 
 
-def _img_to_size(p: Path, opts, ctx):
-    target = opts["bytes"]
-    if p.stat().st_size <= target:
-        raise OpError(f"Already {p.stat().st_size / 1024:.0f} KB — smaller than the {target / 1024:.0f} KB target")
-    im = open_image(p)
-    if getattr(im, "n_frames", 1) > 1:
-        im.seek(0)
-        im = im.copy()
-    ext = ext_of(p) if ext_of(p) in LOSSY or ext_of(p) == "png" else "png"
+def fit_bytes(im: Image.Image, ext: str, target: int) -> bytes | None:
+    """Highest quality (then, if needed, the largest size) whose encoding fits in `target` bytes."""
     best = None
     scale = 1.0
     while scale > 0.05:
@@ -74,6 +67,19 @@ def _img_to_size(p: Path, opts, ctx):
         if best:
             break
         scale *= 0.8                                 # even the lowest quality is too big: shrink and retry
+    return best
+
+
+def _img_to_size(p: Path, opts, ctx):
+    target = opts["bytes"]
+    if p.stat().st_size <= target:
+        raise OpError(f"Already {p.stat().st_size / 1024:.0f} KB — smaller than the {target / 1024:.0f} KB target")
+    im = open_image(p)
+    if getattr(im, "n_frames", 1) > 1:
+        im.seek(0)
+        im = im.copy()
+    ext = ext_of(p) if ext_of(p) in LOSSY or ext_of(p) == "png" else "png"
+    best = fit_bytes(im, ext, target)
     if not best:
         raise OpError(f"Couldn't get this image under {target // 1024} KB")
     dst = out_path(p, ext, _size_tag(target))

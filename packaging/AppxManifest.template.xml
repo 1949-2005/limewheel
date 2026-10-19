@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Limewheel MSIX package manifest (full-trust desktop app).
+
+  Placeholders filled in by build_msix.ps1:
+    {IDENTITY_NAME}            Partner Center "Package/Identity/Name"
+    {PUBLISHER}               Partner Center "Package/Identity/Publisher" (CN=...)
+    {PUBLISHER_DISPLAY_NAME}  Partner Center "Publisher display name"
+    {VERSION}                 4-part version, e.g. 1.3.0.0
+-->
+<Package
+    xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+    xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+    xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+    xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+    xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+    xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+    xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+    IgnorableNamespaces="uap rescap desktop desktop4 desktop5 com">
+
+  <Identity
+      Name="{IDENTITY_NAME}"
+      Publisher="{PUBLISHER}"
+      Version="{VERSION}"
+      ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Limewheel</DisplayName>
+    <PublisherDisplayName>{PUBLISHER_DISPLAY_NAME}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily
+        Name="Windows.Desktop"
+        MinVersion="10.0.19041.0"
+        MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application
+        Id="Limewheel"
+        Executable="Limewheel.exe"
+        EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+          DisplayName="Limewheel"
+          Description="Drag a file, tap a key, drop it on the wheel to convert it."
+          BackgroundColor="transparent"
+          Square150x150Logo="Assets\Square150x150Logo.png"
+          Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+            Wide310x150Logo="Assets\Wide310x150Logo.png"
+            Square71x71Logo="Assets\Square71x71Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+
+        <!-- Optional launch at sign-in (user can toggle in Settings). -->
+        <desktop:Extension
+            Category="windows.startupTask"
+            Executable="Limewheel.exe"
+            EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask
+              TaskId="LimewheelStartup"
+              Enabled="true"
+              DisplayName="Limewheel" />
+        </desktop:Extension>
+
+        <!-- Explorer context menu on files and folders, backed by the CLSID. -->
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type="*">
+              <desktop5:Verb Id="Limewheel"
+                  Clsid="5C3E8F2A-7B41-4D9C-9A6E-1F0B2C7D8E91" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="Directory">
+              <desktop5:Verb Id="Limewheel"
+                  Clsid="5C3E8F2A-7B41-4D9C-9A6E-1F0B2C7D8E91" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+
+        <!-- In-proc COM server that implements the context menu (IExplorerCommand). -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="Limewheel context menu">
+              <com:Class
+                  Id="5C3E8F2A-7B41-4D9C-9A6E-1F0B2C7D8E91"
+                  Path="LimewheelShell.dll"
+                  ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+</Package>

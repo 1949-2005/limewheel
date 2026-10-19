@@ -24,7 +24,7 @@ def resource(name: str) -> Path:
 sys.path.insert(0, str(resource("")))
 from limewheel.brand import NAME as APP  # noqa: E402
 
-VERSION = "1.2.2"
+VERSION = "1.3.0"
 PUBLISHER = f"{APP} for Windows"
 UNINSTALL_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{APP}"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -107,18 +107,36 @@ Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' 
 Remove-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\__APP__' -Recurse
 Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('Programs')) '__APP__.lnk')
 Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) '__APP__.lnk')
+# Explorer right-click menu (only present when the menu add-on was installed)
+if (Test-Path -LiteralPath (Join-Path $dir 'LimewheelShell.dll')) {
+  Remove-Item -LiteralPath 'HKCU:\Software\Classes\*\shell\Limewheel' -Recurse
+  Remove-Item -LiteralPath 'HKCU:\Software\Classes\Directory\shell\Limewheel' -Recurse
+  Remove-Item -LiteralPath 'HKCU:\Software\Classes\CLSID\__CLSID__' -Recurse
+}
 Start-Sleep -Milliseconds 500
 Set-Location $env:TEMP
 Remove-Item -LiteralPath $dir -Recurse -Force
+if (Test-Path -LiteralPath $dir) {
+  # Explorer may still hold the menu add-on: finish the clean-up at the next sign-in
+  Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Name '__APP__Cleanup' -Value ('cmd.exe /c rmdir /s /q "' + $dir + '"')
+}
 Add-Type -AssemblyName PresentationFramework
 [System.Windows.MessageBox]::Show('__APP__ was removed.', '__APP__') | Out-Null
 """
 
 
+SHELL_DLL = "LimewheelShell.dll"            # Explorer right-click menu add-on (Limewheel builds only)
+
+
 def register(dest: Path, desktop_icon: bool, startup: bool):
     import winreg
     exe = dest / f"{APP}.exe"
-    (dest / "uninstall.ps1").write_text(UNINSTALL_PS1.replace("__APP__", APP), encoding="utf-8-sig")
+    from shellreg import CLSID
+    (dest / "uninstall.ps1").write_text(UNINSTALL_PS1.replace("__APP__", APP).replace("__CLSID__", CLSID),
+                                        encoding="utf-8-sig")
+    if (dest / SHELL_DLL).exists():
+        import shellreg
+        shellreg.register(dest / SHELL_DLL)
     shortcut(start_menu() / f"{APP}.lnk", exe)
     if desktop_icon:
         shortcut(desktop() / f"{APP}.lnk", exe)
@@ -160,6 +178,22 @@ def remove_previous(dest: Path):
             (dest / name).unlink(missing_ok=True)
         except OSError:
             pass
+    # Explorer keeps the right-click add-on loaded, so it can't be deleted or overwritten while
+    # Explorer runs. Windows does allow renaming a loaded DLL: move it aside, delete it next time.
+    for old in dest.glob(f"{SHELL_DLL}.*.old"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    dll = dest / SHELL_DLL
+    if dll.exists():
+        try:
+            dll.unlink()
+        except OSError:
+            try:
+                dll.rename(dest / f"{SHELL_DLL}.{int(time.time())}.old")
+            except OSError:
+                pass
 
 
 def install(dest: Path, desktop_icon: bool, startup: bool, progress=lambda f: None):

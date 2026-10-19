@@ -5,3 +5,5 @@ dist/
 *.spec
 app.ico
 app_icon.png
+shell/out/
+packaging/out/

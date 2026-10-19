@@ -56,6 +56,7 @@ _P = {
     "cat-subs": '<rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M7 15h4M13 15h4M7 11h2M11 11h6"/>',
     "cat-archive": '<rect x="2.5" y="3" width="19" height="5" rx="1.5"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/>',
     "cat-folder": '<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/>',
+    "presets": '<rect x="3" y="3" width="8" height="11" rx="1.5"/><rect x="13" y="3" width="8" height="6" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="16" width="8" height="5" rx="1.5"/>',
     "frame": '<rect x="2.5" y="2.5" width="19" height="19" rx="3"/><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="m7 14.5 3-3 2.5 2.5 1.5-1.5 3 3"/>',
     "layers": '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
     "gauge": '<path d="M12 14l4-4"/><path d="M3.5 18a9.5 9.5 0 1 1 17 0z"/>',
@@ -92,7 +93,7 @@ OP_ICONS = {
     "vid.channels": "headphones", "aud.bleep": "bleep", "vid.bleep": "bleep", "act.share": "share",
     "img.tosize": "target", "vid.tosize": "target", "aud.tosize": "target", "pdf.tosize": "target",
     "img.meta": "tag", "vid.meta": "tag", "aud.meta": "tag", "pdf.meta": "tag", "pdf.organize": "reorder",
-    "img.collage": "grid", "img.qr": "qr", "pdf.qr": "qr",
+    "img.collage": "grid", "img.preset": "presets", "vid.preset": "presets", "img.qr": "qr", "pdf.qr": "qr",
 }
 
 

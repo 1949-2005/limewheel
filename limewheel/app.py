@@ -1,6 +1,7 @@
 """Tray application: wires hooks -> wheel -> operations."""
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
 import sys
@@ -11,7 +12,7 @@ from PySide6.QtCore import QLockFile, QObject, QPointF, QRunnable, Qt, QThreadPo
 from PySide6.QtGui import (QAction, QPen, QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap,
                            QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QMenu, QMessageBox, QSlider, QSystemTrayIcon, QWidget)
+                               QLineEdit, QMenu, QMessageBox, QPushButton, QSlider, QSystemTrayIcon, QWidget)
 
 from . import settings as settings_mod
 from .brand import B, ID as BRAND_ID, NAME
@@ -127,6 +128,105 @@ def explorer_selection() -> list[Path]:
     return found[0] if found else []
 
 
+# ------------------------------------------------------------- hand-off from Explorer
+# `<exe> --mode tools --list <file>` (the right-click menu) or `<exe> <paths…>` while the app is
+# already running: the new process sends the files to the running one with WM_COPYDATA and exits.
+WM_COPYDATA = 0x004A
+IPC_MAGIC = 0x4C57                                  # "LW"
+
+
+class _COPYDATA(ctypes.Structure):
+    _fields_ = [("dwData", ctypes.c_size_t), ("cbData", ctypes.c_uint32), ("lpData", ctypes.c_void_p)]
+
+
+def packaged() -> bool:
+    """True when running from the Microsoft Store (MSIX) package."""
+    n = ctypes.c_uint32(0)
+    try:
+        return ctypes.windll.kernel32.GetCurrentPackageFullName(ctypes.byref(n), None) != 15700  # NO_PACKAGE
+    except (AttributeError, OSError):
+        return False
+
+
+def _ipc_title() -> str:
+    return f"{NAME} IPC {os.environ.get('USERNAME', '')}"
+
+
+def parse_open_args(argv: list[str]) -> tuple[str, list[Path]]:
+    """--mode <convert|tools|actions>, --list <utf-8 file, one path per line>, plus plain paths."""
+    mode, paths, it = "convert", [], iter(argv)
+    for a in it:
+        if a == "--mode":
+            mode = next(it, "convert")
+        elif a == "--list":
+            f = Path(next(it, ""))
+            try:
+                paths += [Path(line.strip()) for line in f.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+                f.unlink()
+            except OSError:
+                pass
+        elif not a.startswith("--"):
+            paths.append(Path(a))
+    if mode not in ("convert", "tools", "actions"):
+        mode = "convert"
+    return mode, [p.resolve() for p in paths if p.exists()]
+
+
+def forward_to_running(mode: str, paths: list[Path]) -> bool:
+    import json
+    user32 = ctypes.windll.user32
+    user32.FindWindowW.restype = ctypes.c_void_p
+    hwnd = user32.FindWindowW(None, _ipc_title())
+    if not hwnd:
+        return False
+    pid = ctypes.c_ulong()
+    user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(pid))
+    user32.AllowSetForegroundWindow(pid.value)              # so the wheel can take the keyboard focus
+    data = json.dumps({"mode": mode, "paths": [str(p) for p in paths]}).encode("utf-8")
+    buf = ctypes.create_string_buffer(data, len(data))
+    cds = _COPYDATA(IPC_MAGIC, len(data), ctypes.cast(buf, ctypes.c_void_p))
+    res = ctypes.c_size_t()
+    ok = user32.SendMessageTimeoutW(ctypes.c_void_p(hwnd), WM_COPYDATA, None, ctypes.byref(cds),
+                                    0x0002, 3000, ctypes.byref(res))           # SMTO_ABORTIFHUNG
+    return bool(ok and res.value == 1)
+
+
+class _Ipc(QWidget):
+    """Hidden window that receives files from new launches. Several launches within 300 ms
+    (classic menus start one process per file) are merged into one wheel."""
+
+    def __init__(self, on_open):
+        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint)
+        self.setWindowTitle(_ipc_title())
+        self.on_open, self._mode, self._paths = on_open, "convert", []
+        self.winId()                                        # create the native window now (never shown)
+        from PySide6.QtCore import QTimer
+        self._flush = QTimer(self, singleShot=True, interval=300)
+        self._flush.timeout.connect(self._fire)
+
+    def nativeEvent(self, kind, message):
+        import json
+        from ctypes import wintypes
+        msg = wintypes.MSG.from_address(int(message))
+        if msg.message == WM_COPYDATA:
+            cds = _COPYDATA.from_address(msg.lParam)
+            if cds.dwData == IPC_MAGIC and cds.cbData:
+                try:
+                    d = json.loads(ctypes.string_at(cds.lpData, cds.cbData).decode("utf-8"))
+                    self._mode = d.get("mode", "convert")
+                    self._paths += [Path(p) for p in d.get("paths", []) if Path(p) not in self._paths]
+                    self._flush.start()
+                    return True, 1
+                except Exception:
+                    traceback.print_exc()
+        return False, 0
+
+    def _fire(self):
+        paths, self._paths = self._paths, []
+        if paths:
+            self.on_open(self._mode, paths)
+
+
 class _JobSignals(QObject):
     done = Signal(object, list)    # op, outputs
     failed = Signal(object, str)
@@ -229,7 +329,19 @@ class SettingsDialog(Panel):
         b.addWidget(self.sounds)
         self.startup = QCheckBox(f"Start {NAME} when I sign in")
         self.startup.setChecked(startup)
-        b.addWidget(self.startup)
+        if packaged():                      # Store apps start via their StartupTask, switched in Windows
+            s_row = QWidget()
+            sl = QHBoxLayout(s_row)
+            sl.setContentsMargins(0, 0, 0, 0)
+            s_hint = QLabel("Start at sign-in is switched in Windows Settings")
+            s_hint.setProperty("role", "hint")
+            s_btn = QPushButton("Startup apps…")
+            s_btn.clicked.connect(lambda: os.startfile("ms-settings:startupapps"))
+            sl.addWidget(s_hint, 1)
+            sl.addWidget(s_btn)
+            b.addWidget(s_row)
+        else:
+            b.addWidget(self.startup)
         q_row = QWidget()
         ql = QHBoxLayout(q_row)
         ql.setContentsMargins(0, 0, 0, 0)
@@ -245,10 +357,35 @@ class SettingsDialog(Panel):
         ql.addWidget(self.quality, 1)
         ql.addWidget(q_val)
         b.addWidget(q_row)
+        b.addWidget(section("Automation"))
+        self.watch_rules = [dict(r) for r in data.get("watch_folders", [])]
+        w_row = QWidget()
+        wl = QHBoxLayout(w_row)
+        wl.setContentsMargins(0, 0, 0, 0)
+        self.watch_info = QLabel()
+        self.watch_info.setProperty("role", "hint")
+        watch_btn = QPushButton("Watch folders…")
+        watch_btn.clicked.connect(self._edit_watch)
+        wl.addWidget(self.watch_info, 1)
+        wl.addWidget(watch_btn)
+        b.addWidget(w_row)
+        self._watch_text()
         hint = QLabel("Drag a file, tap a key, then drop it on an option.")
         hint.setProperty("role", "hint")
         hint.setWordWrap(True)
         b.addWidget(hint)
+
+    def _watch_text(self):
+        n = sum(1 for r in self.watch_rules if r.get("enabled", True))
+        self.watch_info.setText("No watch folders" if not self.watch_rules else
+                                f"{n} watch folder{'s' if n != 1 else ''} on")
+
+    def _edit_watch(self):
+        from .tools_ui import watch_dialog
+        rules = watch_dialog(self.watch_rules)
+        if rules is not None:
+            self.watch_rules = rules
+            self._watch_text()
 
     def _check(self):
         keys = [c.currentText() for c in self.combos.values()]
@@ -267,11 +404,11 @@ class SettingsDialog(Panel):
                 "hotkey": self.hotkey.text().strip(), "explorer_only": self.explorer.isChecked(),
                 "hold_to_convert": self.hold.isChecked(), "hold_with_mouse": self.hold_mouse.isChecked(),
                 "reveal_when_done": self.reveal.isChecked(), "sounds": self.sounds.isChecked(),
-                "image_quality": self.quality.value()}
+                "image_quality": self.quality.value(), "watch_folders": self.watch_rules}
 
 
 class LimewheelApp(QObject):
-    def __init__(self, qapp: QApplication, oneshot: list[Path] | None = None):
+    def __init__(self, qapp: QApplication, oneshot: list[Path] | None = None, oneshot_mode: str = "convert"):
         super().__init__()
         self.qapp = qapp
         self.settings = settings_mod.load()
@@ -299,6 +436,9 @@ class LimewheelApp(QObject):
         sel = QAction("Open wheel for Explorer selection", menu)
         sel.triggered.connect(self.on_hotkey)
         menu.addAction(sel)
+        wf = QAction("Watch folders…", menu)
+        wf.triggered.connect(self.open_watch)
+        menu.addAction(wf)
         menu.addSeparator()
         st = QAction("Settings…", menu)
         st.triggered.connect(self.open_settings)
@@ -311,9 +451,13 @@ class LimewheelApp(QObject):
         self.tray.show()
 
         self.hooks = None
+        self.watcher = None
+        self._watch_pool = QThreadPool(self)
+        self._watch_pool.setMaxThreadCount(2)             # don't flood the PC when 50 files land at once
+        self._watch_stats = {"queued": 0, "done": 0, "failed": 0, "toast": None, "last": None, "error": ""}
         if self.oneshot:
             self.wheel.visibility_changed.connect(self._oneshot_maybe_quit)
-            self.wheel.open_keyboard(oneshot, "convert")
+            self.wheel.open_keyboard(oneshot, oneshot_mode)
         else:
             self.hooks = Hooks(self.settings)
             self.hooks.signals.modifier.connect(self.on_modifier)
@@ -322,6 +466,11 @@ class LimewheelApp(QObject):
             self.hooks.signals.hotkey.connect(self.on_hotkey)
             self.wheel.visibility_changed.connect(lambda v: setattr(self.hooks, "wheel_visible", v))
             self.hooks.start()
+            self.ipc = _Ipc(self.open_paths)
+            from .watch import Watcher
+            self.watcher = Watcher(self)
+            self.watcher.ready.connect(self._watch_run)
+            self.watcher.set_rules(self.settings.get("watch_folders", []))
             keys = self.settings["keys"]
             hk = self.settings.get("hotkey", "").upper() if self.hooks.hotkey_ok else None
             msg = (f"Drag a file and tap {keys['convert'].capitalize()}, {keys['tools'].capitalize()} or "
@@ -351,6 +500,13 @@ class LimewheelApp(QObject):
         if self.wheel.isVisible() and not self.wheel.keyboard:
             from PySide6.QtCore import QTimer
             QTimer.singleShot(450, self.wheel.hide_if_idle)
+
+    def open_paths(self, mode: str, paths: list[Path]):
+        """Files handed over by the Explorer menu (or a second launch)."""
+        log("open", mode, paths)
+        if self.wheel.isVisible():
+            self.wheel.hide()
+        self.wheel.open_keyboard(paths, mode)
 
     def on_hotkey(self):
         paths = explorer_selection()
@@ -457,6 +613,51 @@ class LimewheelApp(QObject):
         w.show()
         self.floats.append(w)
 
+    # ---------------------------------------------------- watch folders
+    def _watch_run(self, rule: dict, path: Path):
+        from .watch import action_label, run_rule
+        s = self._watch_stats
+        s["queued"] += 1
+        if s["toast"] is None:
+            s["toast"] = self.toasts.show("Watch folder", f"{action_label(rule['action'])}: {path.name}",
+                                          self._reveal)
+        job = Job(lambda: run_rule(rule, path, self.ctx), None)
+        job.setAutoDelete(False)
+        self._jobs.add(job)
+
+        def finished(outs=None, err=None):
+            self._jobs.discard(job)
+            if err is None:
+                s["done"] += 1
+                if outs:
+                    s["last"] = Path(outs[0])
+            else:
+                s["failed"] += 1
+                s["error"] = f"{path.name}: {err}"
+                print(f"[watch failed] {path}: {err}", flush=True)
+            if s["done"] + s["failed"] >= s["queued"]:
+                n, bad = s["done"], s["failed"]
+                title = f"Watch folder: {n} file{'s' if n != 1 else ''} done" if n else "Watch folder"
+                detail = (f"{bad} couldn't be converted — {s['error']}" if bad else
+                          (s["last"].name if s["last"] else ""))
+                s["toast"].finish(title, detail[:300], s["last"], error=bool(bad and not n))
+                self._last_output = s["last"] or self._last_output
+                self._watch_stats = {"queued": 0, "done": 0, "failed": 0, "toast": None, "last": None, "error": ""}
+
+        job.signals.done.connect(lambda _op, outs: finished(outs))
+        job.signals.failed.connect(lambda _op, msg: finished(err=msg))
+        self._watch_pool.start(job)
+
+    def open_watch(self):
+        from .tools_ui import watch_dialog
+        rules = watch_dialog(self.settings.get("watch_folders", []))
+        if rules is None:
+            return
+        self.settings["watch_folders"] = rules
+        settings_mod.save(self.settings)
+        if self.watcher:
+            self.watcher.set_rules(rules)
+
     # --------------------------------------------------------- one-shot
     def _oneshot_maybe_quit(self, visible: bool):
         if not visible and not self.wheel.dropped:
@@ -502,10 +703,12 @@ class LimewheelApp(QObject):
         old_hotkey = self.settings.get("hotkey")
         self.settings.update(dlg.values())
         settings_mod.save(self.settings)
-        if dlg.startup.isChecked() != self._startup_enabled():
+        if not packaged() and dlg.startup.isChecked() != self._startup_enabled():
             self._set_startup(dlg.startup.isChecked())
         if self.hooks and self.settings.get("hotkey") != old_hotkey:
             self.hooks.restart()
+        if self.watcher:
+            self.watcher.set_rules(self.settings.get("watch_folders", []))
         self.wheel.update()
 
     def quit(self):
@@ -539,9 +742,13 @@ def main(argv: list[str]) -> int:
         Path(argv[4]).write_text(json.dumps(res), encoding="utf-8")
         return 0
 
-    files = [Path(a).resolve() for a in argv[1:] if not a.startswith("--")]
-    if files:
-        app = LimewheelApp(qapp, oneshot=files)
+    if any(not a.startswith("--") for a in argv[1:]) or "--list" in argv:
+        mode, files = parse_open_args(argv[1:])
+        if not files:
+            return 0
+        if forward_to_running(mode, files):
+            return 0
+        app = LimewheelApp(qapp, oneshot=files, oneshot_mode=mode)
         return qapp.exec()
 
     settings_mod.DIR.mkdir(parents=True, exist_ok=True)

@@ -160,11 +160,13 @@ def save_ico(im: Image.Image, dst: Path, sizes=ICO_SIZES, bmp_below: int = 0) ->
 GRAPHIC_SRC = {"png", "gif", "bmp", "tiff", "ico", "svg"}
 
 
-def save_image(im: Image.Image, dst: Path, ext: str, quality: int = 85, src_ext: str | None = None) -> Path:
+def save_image(im: Image.Image, dst: Path, ext: str, quality: int = 85, src_ext: str | None = None,
+               dpi: int | None = None) -> Path:
     """Save with the best settings for the target, keeping colour profile and EXIF.
-    src_ext tells whether the picture came from a graphic (screenshot/logo) or a photo."""
+    src_ext tells whether the picture came from a graphic (screenshot/logo) or a photo;
+    dpi sets the print resolution tag (JPG/PNG/TIFF)."""
     fmt = TARGETS[ext]
-    kw = {}
+    kw = {"dpi": (dpi, dpi)} if dpi and ext in ("jpg", "png", "tiff") else {}
     info = dict(im.info)
     animated = getattr(im, "n_frames", 1) > 1
     if animated and ext in ANIMATED_OK:
