@@ -86,9 +86,23 @@ def save_image(im: Image.Image, dst: Path, ext: str, quality: int = 85) -> Path:
     if ext == "png":
         kw["optimize"] = True
     if ext == "ico":
+        # Windows wants square icons: centre the picture on a transparent square first,
+        # then render every size ourselves (Lanczos + a light sharpen on the small ones).
+        from PIL import ImageFilter
         im = im.convert("RGBA")
-        kw["sizes"] = [s for s in [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
-                       if s[0] <= max(im.size)] or [(16, 16)]
+        side = max(im.size)
+        square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        square.paste(im, ((side - im.width) // 2, (side - im.height) // 2), im)
+        sizes = [s for s in (16, 24, 32, 48, 64, 128, 256) if s <= max(side, 16)] or [16]
+        frames = []
+        for s in sizes:
+            f = square.resize((s, s), Image.Resampling.LANCZOS)
+            if s <= 64:
+                f = f.filter(ImageFilter.UnsharpMask(radius=0.8, percent=60, threshold=1))
+            frames.append(f)
+        big = frames[-1]
+        big.save(dst, "ICO", sizes=[(s, s) for s in sizes], append_images=frames[:-1])
+        return dst
     if ext == "tiff":
         kw["compression"] = "tiff_lzw"
     if ext == "pdf":

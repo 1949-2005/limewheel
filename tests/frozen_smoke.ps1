@@ -6,7 +6,7 @@ $work = Join-Path $env:TEMP "frozen-smoke"
 Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory $work | Out-Null
 $cases = @(
-  @("img.to.heic", "photo.jpg", ""), @("img.to.avif", "photo.jpg", ""), @("img.to.png", "logo.svg", ""),
+  @("img.to.heic", "photo.jpg", ""), @("img.to.avif", "photo.jpg", ""), @("img.to.png", "logo.svg", ""), @("img.to.ico", "flower.jpg", ""),
   @("img.edit", "photo.jpg", '{"values": {"Exposure": 40, "Saturation": 20}}'),
   @("img.background", "sample.png", '{"color": "#FFFFFF", "pad": 0.1, "rounded": true, "shadow": true, "square": false}'),
   @("vid.to.webm", "clip.mp4", ""), @("vid.speed", "clip.mp4", '{"speed": 2.0, "pitch": true, "mute": false}'),
