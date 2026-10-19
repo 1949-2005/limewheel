@@ -9,7 +9,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
 
 from .base import CREATE_NO_WINDOW, OpError, ext_of, out_path, register
 from .docs import PDF, _fitz
@@ -137,7 +138,8 @@ def _pdf_to_size(p: Path, opts, ctx):
         doc = fitz.open(p)
         try:
             if hasattr(doc, "rewrite_images"):
-                doc.rewrite_images(dpi_threshold=dpi + 10, dpi_target=dpi, quality=quality)
+                doc.rewrite_images(dpi_threshold=dpi + 10, dpi_target=dpi, quality=quality,
+                                   lossy=True, lossless=dpi <= 96, bitonal=False)
             data = doc.tobytes(garbage=4, deflate=True, deflate_images=True, deflate_fonts=True, clean=True)
         finally:
             doc.close()
@@ -519,43 +521,97 @@ register("pdf.qr", "Read QR", "tools", PDF, _qr, main_thread=True, max_files=1)
 
 # =================================================================== raster -> SVG
 
-def trace_svg(im: Image.Image, colors: int = 12, max_side: int = 600) -> str:
-    """Colour vector tracing: reduce to a few colours, trace each colour layer with potrace."""
+def _lab(rgb):
+    """sRGB (N,3 uint8) -> CIE Lab (D65)."""
+    c = rgb / 255.0
+    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+    xyz = c @ np.array([[0.4124, 0.2126, 0.0193], [0.3576, 0.7152, 0.1192], [0.1805, 0.0722, 0.9505]])
+    xyz /= np.array([0.95047, 1.0, 1.08883])
+    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16 / 116)
+    return np.stack([116 * f[:, 1] - 16, 500 * (f[:, 0] - f[:, 1]), 200 * (f[:, 1] - f[:, 2])], 1)
+
+
+def _palette(rgb, colors, min_delta_e=6.0):
+    """Over-quantize to 64 colours, then Ward-merge clusters in Lab space. Ward weighs colour
+    distance by area, so a small but distinct colour (an eye, a logo dot, a thin stem) survives
+    while the many steps of a smooth gradient get merged first. Returns (labels HxW, rgb palette)."""
+    q = rgb.quantize(64, method=Image.Quantize.MEDIANCUT, kmeans=2, dither=Image.Dither.NONE)
+    idx = np.asarray(q)
+    pal = np.array(q.getpalette()[:192], dtype=np.float64).reshape(-1, 3)
+    n = np.bincount(idx.ravel(), minlength=len(pal)).astype(np.float64)
+    live = [i for i in range(len(pal)) if n[i] > 0]
+    lab = {i: _lab(pal[i:i + 1])[0] for i in live}
+    col = {i: pal[i].copy() for i in live}
+    cnt = {i: n[i] for i in live}
+    parent = np.arange(len(pal))
+    while len(live) > 1:
+        best = None
+        for a_ in range(len(live)):
+            for b_ in range(a_ + 1, len(live)):
+                a, b = live[a_], live[b_]
+                d2 = float(((lab[a] - lab[b]) ** 2).sum())
+                cost = d2 * cnt[a] * cnt[b] / (cnt[a] + cnt[b])
+                if best is None or cost < best[0]:
+                    best = (cost, a, b, d2)
+        _, a, b, d2 = best
+        if len(live) <= colors and d2 > min_delta_e ** 2:
+            break
+        t = cnt[a] + cnt[b]
+        lab[a] = (lab[a] * cnt[a] + lab[b] * cnt[b]) / t
+        col[a] = (col[a] * cnt[a] + col[b] * cnt[b]) / t
+        cnt[a] = t
+        parent[parent == b] = a
+        live.remove(b)
+    remap = np.zeros(len(pal), dtype=np.int32)
+    out_pal = []
+    for k, i in enumerate(sorted(live, key=lambda i: -cnt[i])):   # biggest area first
+        remap[parent == i] = k
+        out_pal.append(tuple(int(round(v)) for v in col[i]))
+    return remap[idx], out_pal
+
+
+def trace_svg(im: Image.Image, colors: int = 16, max_side: int = 800) -> str:
+    """Colour vector tracing: perceptual palette, then potrace on *stacked* layers - each layer
+    also covers every layer drawn above it, so neighbouring shapes overlap instead of leaving
+    hairline gaps (no outline stroke needed, so fine details keep their true width)."""
     import potrace
-    im = _flatten(im) if im.mode not in ("RGB", "RGBA") else im
-    alpha = im.getchannel("A") if im.mode == "RGBA" else None
-    rgb = im.convert("RGB")
+    W, H = im.size
+    alpha = np.asarray(im.convert("RGBA").getchannel("A")) if "A" in im.getbands() or im.mode == "P" else None
+    rgb = _flatten(im).convert("RGB")
     k = min(1.0, max_side / max(rgb.size))
     if k < 1:
-        rgb = rgb.resize((max(1, int(rgb.width * k)), max(1, int(rgb.height * k))), Image.Resampling.LANCZOS)
-        alpha = alpha.resize(rgb.size) if alpha else None
-    q = rgb.quantize(colors=colors, method=Image.Quantize.MEDIANCUT)
-    pal = q.getpalette()[: colors * 3]
-    px = q.load()
-    ax = alpha.load() if alpha else None
-    w, h = q.size
-    counts = sorted(((c, n) for n, c in q.getcolors()), key=lambda t: -t[1])
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}">']
-    for c, _n in counts:                                       # big areas first, details on top
-        # potrace fills the False pixels
-        bm = potrace.Bitmap([[not (px[x, y] == c and (ax is None or ax[x, y] > 127)) for x in range(w)]
-                             for y in range(h)])
+        size = (max(1, round(W * k)), max(1, round(H * k)))
+        rgb = rgb.resize(size, Image.Resampling.LANCZOS)
+        if alpha is not None:
+            alpha = np.asarray(Image.fromarray(alpha).resize(size, Image.Resampling.LANCZOS))
+    rgb = rgb.filter(ImageFilter.MedianFilter(3))           # drop JPEG noise / anti-alias specks
+    labels, pal = _palette(rgb, colors)
+    if alpha is not None:
+        labels = np.where(alpha > 127, labels, -1)
+    h, w = labels.shape
+    turd = max(2, int(w * h / 150000))
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{W}" height="{H}">']
+    for c, rgbc in enumerate(pal):
+        mask = labels >= c                                     # this colour + every layer stacked above it
+        if not (labels == c).any():
+            continue
+        ys, xs = np.nonzero(mask.any(1))[0], np.nonzero(mask.any(0))[0]
+        y0, x0 = max(0, ys[0] - 1), max(0, xs[0] - 1)       # trace only the bounding box (much faster)
+        sub = mask[y0:ys[-1] + 2, x0:xs[-1] + 2]
         d = []
-        for curve in bm.trace(turdsize=2, alphamax=1.0, opticurve=True, opttolerance=0.2):
+        for curve in potrace.Bitmap(~sub).trace(turdsize=turd, alphamax=1.0, opticurve=True, opttolerance=0.2):
             s = curve.start_point
-            d.append(f"M{s.x:.1f},{s.y:.1f}")
+            d.append(f"M{s.x + x0:.1f},{s.y + y0:.1f}")
             for seg in curve.segments:
                 e = seg.end_point
                 if seg.is_corner:
-                    d.append(f"L{seg.c.x:.1f},{seg.c.y:.1f}L{e.x:.1f},{e.y:.1f}")
+                    d.append(f"L{seg.c.x + x0:.1f},{seg.c.y + y0:.1f}L{e.x + x0:.1f},{e.y + y0:.1f}")
                 else:
-                    d.append(f"C{seg.c1.x:.1f},{seg.c1.y:.1f} {seg.c2.x:.1f},{seg.c2.y:.1f} {e.x:.1f},{e.y:.1f}")
+                    d.append(f"C{seg.c1.x + x0:.1f},{seg.c1.y + y0:.1f} {seg.c2.x + x0:.1f},{seg.c2.y + y0:.1f} "
+                             f"{e.x + x0:.1f},{e.y + y0:.1f}")
             d.append("Z")
         if d:
-            col = "#%02x%02x%02x" % tuple(pal[c * 3:c * 3 + 3])
-            # a hairline stroke in the same colour hides the seams between neighbouring layers
-            parts.append(f'<path fill="{col}" stroke="{col}" stroke-width="0.8" stroke-linejoin="round" '
-                         f'fill-rule="evenodd" d="{"".join(d)}"/>')
+            parts.append(f'<path fill="#%02x%02x%02x" fill-rule="evenodd" d="{"".join(d)}"/>' % rgbc)
     parts.append("</svg>")
     return "".join(parts)
 

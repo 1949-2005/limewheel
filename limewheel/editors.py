@@ -483,6 +483,22 @@ def draw_shape(p: QPainter, s: dict, preview: bool = False):
         p.drawText(s["pts"][0], s["text"])
 
 
+def obscure(region: Image.Image, tool: str) -> Image.Image:
+    """Irreversible blur/pixelate. Fine blur or small blocks can be reversed by tools like Depix or
+    Unredacter, so detail is first collapsed to big blocks (>= half the box's short side, >= 16 px),
+    each block gets random noise, and 'blur' then softens the blocks."""
+    import numpy as np
+    w, h = region.size
+    n = max(16, min(w, h) // 2)
+    small = region.convert("RGBA").resize((max(1, math.ceil(w / n)), max(1, math.ceil(h / n))), Image.Resampling.BOX)
+    a = np.asarray(small).astype(np.int16)
+    a[..., :3] += np.random.default_rng().integers(-24, 25, a[..., :3].shape, dtype=np.int16)
+    small = Image.fromarray(np.clip(a, 0, 255).astype(np.uint8), "RGBA")
+    if tool == "pixelate":
+        return small.resize((w, h), Image.Resampling.NEAREST)
+    return small.resize((w, h), Image.Resampling.BICUBIC).filter(ImageFilter.GaussianBlur(n / 2))
+
+
 def render_markup(im: Image.Image, shapes: list[dict]) -> Image.Image:
     """Full-resolution result: pixel redactions with PIL, then vector shapes with Qt."""
     out = im.convert("RGBA")
@@ -494,13 +510,7 @@ def render_markup(im: Image.Image, shapes: list[dict]) -> Image.Image:
             if box[2] - box[0] < 2 or box[3] - box[1] < 2:
                 continue
             region = out.crop(box)
-            if s["tool"] == "blur":
-                region = region.filter(ImageFilter.GaussianBlur(max(8, min(region.size) // 6)))
-            else:
-                n = max(6, min(region.size) // 12)
-                small = region.resize((max(1, region.width // n), max(1, region.height // n)), Image.Resampling.BILINEAR)
-                region = small.resize(region.size, Image.Resampling.NEAREST)
-            out.paste(region, box[:2])
+            out.paste(obscure(region, s["tool"]), box[:2])
     vec = [s for s in shapes if s["tool"] not in ("blur", "pixelate")]
     if vec:
         q = pil_to_qimage(out)

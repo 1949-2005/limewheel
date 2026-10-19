@@ -66,4 +66,4 @@ ffmpeg build bundled by [imageio-ffmpeg](https://github.com/imageio/imageio-ffmp
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Bundled third-party components keep their own licenses (Qt/PySide6 LGPL, ffmpeg GPL, PyMuPDF AGPL).
+MIT, see [LICENSE](LICENSE). Bundled third-party components keep their own licenses (Qt/PySide6 LGPL, ffmpeg GPL, PyMuPDF AGPL, libimagequant GPLv3).

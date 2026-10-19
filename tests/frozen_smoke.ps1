@@ -7,6 +7,9 @@ Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory $work | Out-Null
 $cases = @(
   @("img.to.heic", "photo.jpg", ""), @("img.to.avif", "photo.jpg", ""), @("img.to.png", "logo.svg", ""), @("img.to.ico", "flower.jpg", ""), @("img.to.icosmall", "flower.jpg", ""), @("img.to.pdf", "flower.jpg", ""),
+  @("img.compress", "flower.jpg", ""), @("img.compress", "logo_big.png", ""), @("img.rotate", "photo.jpg", ""),
+  @("pdf.md", "doc.pdf", ""), @("pdf.compress", "big.pdf", ""), @("vid.to.mov", "clip.mp4", ""),
+  @("aud.normalize", "tone.wav", ""), @("md.docx", "notes.md", ""),
   @("img.tosize", "flower.jpg", '{"bytes": 25000}'), @("img.to.svg", "photo.jpg", ""), @("img.qr", "qr.png", ""),
   @("img.meta", "photo.jpg", '{"fields": {"title": "T"}, "checks": {}, "strip": false}'),
   @("pdf.organize", "doc.pdf", '{"order": [[1, 90], [0, 0]]}'),
@@ -23,9 +26,10 @@ $cases = @(
   @("arc.tar", "notes.md", ""), @("arc.gz", "notes.md", ""), @("arc.extract", "bundle.zip", "")
 )
 $pass = 0
+$n = 0
 foreach ($c in $cases) {
   $id, $file, $opts = $c
-  $dir = Join-Path $work $id; New-Item -ItemType Directory $dir | Out-Null
+  $n++; $dir = Join-Path $work "$n-$id"; New-Item -ItemType Directory $dir | Out-Null
   Copy-Item (Join-Path $Samples $file) $dir
   $res = Join-Path $dir "result.json"
   $args = @("--run-op", $id, (Join-Path $dir $file), $res)

@@ -50,7 +50,25 @@ def open_image(p: Path) -> Image.Image:
     im = Image.open(p)
     if getattr(im, "n_frames", 1) > 1:
         return im
-    return ImageOps.exif_transpose(im)
+    jpeg = None
+    if im.format == "JPEG":
+        from PIL import JpegImagePlugin
+        jpeg = (im.quantization, JpegImagePlugin.get_sampling(im))
+    im = ImageOps.exif_transpose(im)
+    if jpeg:
+        im.info["src_jpeg"] = jpeg            # survives crop/edit: lets save reuse the source's own quality
+    return im
+
+
+def _normalize_mode(im: Image.Image) -> Image.Image:
+    """16-bit greyscale (I;16) would clip to white when converted naively: scale it down properly."""
+    if im.mode in ("I;16", "I;16L", "I;16B", "I;16N", "I"):
+        lo, hi = im.getextrema()
+        scale = 1 / 257 if hi > 255 else 1
+        out = im.convert("I").point(lambda v: v * scale).convert("L")
+        out.info = dict(im.info)
+        return out
+    return im
 
 
 def _flatten(im: Image.Image) -> Image.Image:
@@ -62,26 +80,28 @@ def _flatten(im: Image.Image) -> Image.Image:
     return im.convert("RGB") if im.mode not in ("RGB", "L") else im
 
 
-ICO_SIZES = (16, 24, 32, 48, 64, 256)        # what Windows actually asks for; 128 etc. are scaled from 256
-ICO_SMALL = (16, 32, 48)
+# Microsoft's icon size table (incl. 20/40/96 for 125%/250% scaling); 128 etc. are scaled from 256.
+ICO_SIZES = (16, 20, 24, 32, 40, 48, 64, 96, 256)
+ICO_SMALL = (16, 20, 24, 32, 48)
+_ICO_SHARPEN = {16: 40, 20: 35, 24: 30, 32: 25, 40: 20, 48: 15}     # gentle, colour only, small sizes
 
 
 def _pad_square(im: Image.Image) -> Image.Image:
     im = im.convert("RGBA")
+    if im.width == im.height:
+        return im
     side = max(im.size)
     sq = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-    sq.paste(im, ((side - im.width) // 2, (side - im.height) // 2), im)
+    # no mask: a masked paste onto transparent squares the alpha and darkens soft edges
+    sq.paste(im, ((side - im.width) // 2, (side - im.height) // 2))
     return sq
 
 
 def _ico_frame_png(f: Image.Image) -> bytes:
-    """PNG bytes for one icon size. 48 px and up are reduced to the best 256 colours with
-    dithering (like pngquant) — visually the same at icon sizes, far fewer bytes. The frame is
-    stored back as 32-bit RGBA PNG: Windows' icon decoder rejects palette PNGs inside .ico."""
-    if f.width >= 48:
-        from PIL import features
-        method = Image.Quantize.LIBIMAGEQUANT if features.check_feature("libimagequant") else Image.Quantize.FASTOCTREE
-        f = f.quantize(colors=256, method=method, dither=Image.Dither.FLOYDSTEINBERG).convert("RGBA")
+    """One icon frame as full-colour 32-bit RGBA PNG (no palette reduction: that was the main
+    quality loss, and Windows rejects palette PNGs in .ico anyway). Fully transparent pixels get
+    their colour zeroed so they compress better."""
+    f = Image.composite(f, Image.new("RGBA", f.size, 0), f.getchannel("A").point(lambda v: 255 if v else 0))
     buf = io.BytesIO()
     f.save(buf, "PNG", optimize=True)
     return buf.getvalue()
@@ -99,9 +119,12 @@ def save_ico(im: Image.Image, dst: Path, sizes=ICO_SIZES) -> Path:
         sizes = [s for s in sizes if s <= side] or [16]
     blobs = []
     for s in sizes:
-        f = sq.resize((s, s), Image.Resampling.LANCZOS)
-        if s <= 64:
-            f = f.filter(ImageFilter.UnsharpMask(radius=0.8, percent=60, threshold=1))
+        f = sq.resize((s, s), Image.Resampling.LANCZOS)          # Pillow premultiplies RGBA itself
+        pct = _ICO_SHARPEN.get(s)
+        if pct:                                                  # sharpen colour only, never the alpha
+            *rgb, a = f.split()
+            rgb = Image.merge("RGB", rgb).filter(ImageFilter.UnsharpMask(radius=0.5, percent=pct, threshold=0))
+            f = Image.merge("RGBA", (*rgb.split(), a))
         blobs.append((s, _ico_frame_png(f)))
     out = bytearray(struct.pack("<HHH", 0, 1, len(blobs)))
     offset = 6 + 16 * len(blobs)
@@ -114,9 +137,15 @@ def save_ico(im: Image.Image, dst: Path, sizes=ICO_SIZES) -> Path:
     return dst
 
 
-def save_image(im: Image.Image, dst: Path, ext: str, quality: int = 85) -> Path:
+GRAPHIC_SRC = {"png", "gif", "bmp", "tiff", "ico", "svg"}
+
+
+def save_image(im: Image.Image, dst: Path, ext: str, quality: int = 85, src_ext: str | None = None) -> Path:
+    """Save with the best settings for the target, keeping colour profile and EXIF.
+    src_ext tells whether the picture came from a graphic (screenshot/logo) or a photo."""
     fmt = TARGETS[ext]
     kw = {}
+    info = dict(im.info)
     animated = getattr(im, "n_frames", 1) > 1
     if animated and ext in ANIMATED_OK:
         kw.update(save_all=True, loop=im.info.get("loop", 0))
@@ -127,18 +156,45 @@ def save_image(im: Image.Image, dst: Path, ext: str, quality: int = 85) -> Path:
     if animated:
         im.seek(0)
         im = im.copy()
+    if ext == "ico":
+        return save_ico(im, dst, ICO_SIZES)
+    im = _normalize_mode(im)
+    src_jpeg = info.get("src_jpeg")
+    icc = info.get("icc_profile")
+    exif = im.getexif()
+    if 0x0112 in exif:
+        del exif[0x0112]                          # pixels are already upright
     if ext in ("jpg", "pdf", "bmp"):
         im = _flatten(im)
     elif im.mode not in ("RGB", "RGBA", "L", "LA", "P", "1"):
         im = im.convert("RGBA")
-    if ext in ("jpg", "webp", "avif", "heic"):
-        kw["quality"] = quality
+    graphic = (src_ext in GRAPHIC_SRC) or (src_ext is None and src_jpeg is None and im.mode in ("RGBA", "LA", "P"))
+    if icc and ext in ("jpg", "png", "webp", "avif", "heic", "tiff"):
+        kw["icc_profile"] = icc                   # wide-gamut photos keep their colours
+    if len(exif) and ext in ("jpg", "png", "webp", "avif", "tiff"):
+        kw["exif"] = exif                         # camera, date, GPS… ("Strip metadata" removes it on purpose)
     if ext == "jpg":
         kw.update(optimize=True, progressive=True)
-    if ext == "png":
+        if src_jpeg and im.mode == "RGB" and len(src_jpeg[0]) >= 2 and src_ext in (None, "jpg"):
+            # re-saving an edited JPEG: reuse its own quantisation tables and chroma subsampling,
+            # so a crop/edit doesn't add a second generation of loss
+            kw.update(qtables=src_jpeg[0], subsampling=max(0, src_jpeg[1]))
+        else:
+            kw.update(quality=quality, subsampling=0 if (graphic or quality >= 90) else 2)  # 4:4:4 keeps text crisp
+    elif ext == "webp":
+        kw["method"] = 6
+        if graphic:
+            kw.update(lossless=True, quality=100, exact=im.mode == "RGBA")   # screenshots/logos: lossless
+        else:
+            kw["quality"] = quality
+    elif ext == "avif":
+        kw.update(quality=quality, subsampling="4:4:4", speed=4)
+    elif ext == "heic":
+        kw.update(quality=quality, chroma=444 if graphic else 420)
+    elif ext == "png":
         kw["optimize"] = True
-    if ext == "ico":
-        return save_ico(im, dst, ICO_SIZES)
+    elif ext == "gif" and im.mode == "RGBA" and im.getextrema()[3][0] == 255:
+        im = im.convert("RGB")                    # opaque: Pillow then uses median cut instead of octree
     if ext == "tiff":
         kw["compression"] = "tiff_lzw"
     if ext == "pdf":
@@ -157,7 +213,7 @@ def _convert(ext):
     def run(p: Path, opts, ctx):
         if ext == "pdf":
             return images_to_pdf([p], out_path(p, "pdf"))
-        return save_image(open_image(p), out_path(p, ext), ext, _q(ctx))
+        return save_image(open_image(p), out_path(p, ext), ext, _q(ctx), src_ext=ext_of(p))
     return run
 
 
@@ -175,15 +231,152 @@ def _same_ext(p: Path) -> str:
     return "png" if e == "svg" else e
 
 
+def _fast_ssim(a, b) -> float:
+    """SSIM on luma over 8x8 blocks (numpy, ~20 ms for 2 MP)."""
+    h, w = (a.shape[0] // 8) * 8, (a.shape[1] // 8) * 8
+    a = a[:h, :w].reshape(h // 8, 8, w // 8, 8).swapaxes(1, 2).reshape(-1, 64)
+    b = b[:h, :w].reshape(h // 8, 8, w // 8, 8).swapaxes(1, 2).reshape(-1, 64)
+    ma, mb = a.mean(1), b.mean(1)
+    va, vb = a.var(1), b.var(1)
+    cov = ((a - ma[:, None]) * (b - mb[:, None])).mean(1)
+    c1, c2 = 6.5025, 58.5225
+    return float((((2 * ma * mb + c1) * (2 * cov + c2)) / ((ma ** 2 + mb ** 2 + c1) * (va + vb + c2))).mean())
+
+
+def _luma(im):
+    import numpy as np
+    return np.asarray(im.convert("L"), dtype=np.float32)
+
+
+def quantize_png(im: Image.Image, min_quality: int = 70) -> Image.Image | None:
+    """pngquant-quality palette (libimagequant). None when 256 colours can't look right (a photo)."""
+    rgba = im.convert("RGBA")
+    try:
+        import imagequant
+        return imagequant.quantize_pil_image(rgba, dithering_level=0.0, max_colors=256, min_quality=min_quality)
+    except ImportError:
+        if rgba.getextrema()[3][0] == 255:        # opaque: median cut beats octree
+            return rgba.convert("RGB").quantize(256, method=Image.Quantize.MEDIANCUT,
+                                                dither=Image.Dither.FLOYDSTEINBERG)
+        return rgba.quantize(256, method=Image.Quantize.FASTOCTREE)
+    except RuntimeError:
+        return None
+
+
 def _compress(p: Path, opts, ctx):
+    """Smaller file that still looks like the original: PNG via pngquant (or stays lossless),
+    JPEG at the lowest quality whose SSIM stays >= 0.985, plus a lossless mozjpeg pass.
+    Never writes a file that is bigger than the source."""
     ext = _same_ext(p)
     im = open_image(p)
     dst = out_path(p, ext, "-compressed")
+    src_size = p.stat().st_size
     if ext == "png" and getattr(im, "n_frames", 1) == 1:
-        im = im.convert("RGBA").quantize(colors=256, method=Image.Quantize.FASTOCTREE)
-        im.save(dst, "PNG", optimize=True)
+        q = quantize_png(im)
+        cands = []
+        for cand in ([q] if q is not None else []) + [im]:
+            buf = io.BytesIO()
+            cand.save(buf, "PNG", optimize=True)
+            cands.append(buf.getvalue())
+        data = min(cands, key=len)
+        if len(data) >= src_size:
+            raise OpError("This PNG is already as small as it can get without visible loss")
+        dst.write_bytes(data)
         return dst
-    return save_image(im, dst, ext, quality=65)
+    if ext == "jpg" and getattr(im, "n_frames", 1) == 1:
+        rgb = _flatten(im)
+        ref = _luma(rgb)
+        best = None
+        lo, hi = 60, 92                           # lowest quality that still looks like the original
+        while lo <= hi:
+            q = (lo + hi) // 2
+            buf = io.BytesIO()
+            rgb.save(buf, "JPEG", quality=q, optimize=True, progressive=True, icc_profile=im.info.get("icc_profile"))
+            if _fast_ssim(ref, _luma(Image.open(buf))) >= 0.985:
+                best, hi = buf.getvalue(), q - 1
+            else:
+                lo = q + 1
+        lossless = None
+        try:                                      # lossless repack of the original (mozjpeg) never hurts
+            import mozjpeg_lossless_optimization as moz
+            lossless = moz.optimize(p.read_bytes(), moz.COPY_MARKERS.ALL)
+            best = moz.optimize(best, moz.COPY_MARKERS.ALL) if best else None
+        except (ImportError, ValueError):
+            pass
+        options = [d for d in (best, lossless) if d]
+        data = min(options, key=len) if options else p.read_bytes()
+        if len(data) >= src_size:
+            raise OpError("This JPEG is already as small as it can get without visible loss")
+        dst.write_bytes(data)
+        return dst
+    return save_image(im, dst, ext, quality=80, src_ext=ext_of(p))
+
+
+# ------------------------------------------------------------------- lossless JPEG rotate / flip
+
+def _orient_table():
+    """(transpose op, current EXIF orientation) -> new orientation, derived from Pillow itself."""
+    base = Image.frombytes("L", (3, 2), bytes(range(6)))
+
+    def view(o):
+        im = base.copy()
+        ex = im.getexif()
+        ex[0x0112] = o
+        im.info["exif"] = ex.tobytes()
+        v = ImageOps.exif_transpose(im)
+        return v.size, v.tobytes()
+
+    views = {o: view(o) for o in range(1, 9)}
+    tab = {}
+    for op in Image.Transpose:
+        for o in range(1, 9):
+            w = Image.frombytes("L", views[o][0], views[o][1]).transpose(op)
+            tab[op, o] = next(n for n, v in views.items() if v == (w.size, w.tobytes()))
+    return tab
+
+
+_OT = None
+
+
+def jpeg_transpose_lossless(src: Path, dst: Path, op) -> Path:
+    """Rotate/flip a JPEG with zero quality loss: only the EXIF Orientation tag is rewritten;
+    the compressed picture (and ICC/XMP) is copied byte for byte."""
+    import struct
+    global _OT
+    if _OT is None:
+        _OT = _orient_table()
+    data = src.read_bytes()
+    with Image.open(src) as im:
+        ex = im.getexif()
+    ex[0x0112] = _OT[op, ex.get(0x0112, 1) or 1]
+    payload = ex.tobytes()
+    seg = b"\xff\xe1" + struct.pack(">H", len(payload) + 2) + payload
+    out, i = bytearray(b"\xff\xd8"), 2
+    while i + 4 <= len(data) and data[i] == 0xFF and data[i + 1] not in (0xDA, 0xD9):
+        ln = struct.unpack(">H", data[i + 2:i + 4])[0]
+        chunk = data[i:i + 2 + ln]
+        if seg and data[i + 1] != 0xE0:           # new EXIF goes right after the JFIF header
+            out += seg
+            seg = b""
+        if not (data[i + 1] == 0xE1 and chunk[4:10] == b"Exif\x00\x00"):
+            out += chunk
+        i += 2 + ln
+    out += seg + data[i:]
+    dst.write_bytes(bytes(out))
+    return dst
+
+
+def _transpose(op, suffix):
+    def run(p: Path, opts, ctx):
+        ext = _same_ext(p)
+        if ext == "jpg":
+            return jpeg_transpose_lossless(p, out_path(p, "jpg", suffix), op)
+        im = open_image(p)
+        if getattr(im, "n_frames", 1) > 1:
+            im.seek(0)
+            im = im.copy()
+        return save_image(im.transpose(op), out_path(p, ext, suffix), ext, _q(ctx), src_ext=ext_of(p))
+    return run
 
 
 def _ask_resize(paths):
@@ -264,7 +457,7 @@ def _pdf_image_bytes(p: Path) -> tuple[bytes, int, int]:
 
 def images_to_pdf(paths: list[Path], dst: Path) -> Path:
     """One A4 page per image (portrait or landscape to suit it), image fitted inside the margins."""
-    import fitz
+    import pymupdf as fitz
     doc = fitz.open()
     for p in paths:
         data, w, h = _pdf_image_bytes(p)
@@ -345,7 +538,10 @@ def _ask_edit(paths):
 def _edit(p: Path, opts, ctx):
     from ..editors import adjust
     ext = _same_ext(p)
-    return save_image(adjust(_first_frame(p), opts["values"]), out_path(p, ext, "-edited"), ext, _q(ctx))
+    src = _first_frame(p)
+    res = adjust(src, opts["values"])
+    res.info.update({k: v for k, v in src.info.items() if k in ("src_jpeg", "icc_profile", "exif")})
+    return save_image(res, out_path(p, ext, "-edited"), ext, _q(ctx))
 
 
 def _ask_crop(paths):
@@ -372,7 +568,10 @@ def _markup(suffix):
     def run(p: Path, opts, ctx):
         from ..editors import render_markup
         ext = _same_ext(p)
-        return save_image(render_markup(_first_frame(p), opts["shapes"]), out_path(p, ext, suffix), ext, _q(ctx))
+        src = _first_frame(p)
+        res = render_markup(src, opts["shapes"])
+        res.info.update({k: v for k, v in src.info.items() if k in ("src_jpeg", "icc_profile", "exif")})
+        return save_image(res, out_path(p, ext, suffix), ext, _q(ctx))
     return run
 
 
@@ -383,12 +582,10 @@ register("img.redact", "Redact…", "tools", IMG_IN, _markup("-redacted"), promp
 register("img.annotate", "Annotate…", "tools", IMG_IN, _markup("-annotated"), prompt=_ask_markup("annotate"),
          max_files=1, main_thread=True)
 register("img.background", "Add BG…", "tools", IMG_IN, _background, prompt=_ask_background)
-register("img.compress", "Compress", "tools", IMG_IN, _compress)
+register("img.compress", "Compress", "tools", IMG_IN - {"svg"}, _compress)
 register("img.resize", "Resize…", "tools", IMG_IN, _resize, prompt=_ask_resize)
-register("img.rotate", "Rotate 90°", "tools", IMG_IN,
-         _simple(lambda im: im.transpose(Image.Transpose.ROTATE_270), "-rotated"))
-register("img.flip", "Flip", "tools", IMG_IN,
-         _simple(lambda im: im.transpose(Image.Transpose.FLIP_LEFT_RIGHT), "-flipped"))
+register("img.rotate", "Rotate 90°", "tools", IMG_IN, _transpose(Image.Transpose.ROTATE_270, "-rotated"))
+register("img.flip", "Flip", "tools", IMG_IN, _transpose(Image.Transpose.FLIP_LEFT_RIGHT, "-flipped"))
 register("img.gray", "Grayscale", "tools", IMG_IN, _simple(_grayscale, "-gray"))
 register("img.strip", "Strip metadata", "tools", IMG_IN, _simple(_strip, "-clean"))
 register("img.mergepdf", "Merge to PDF", "tools", IMG_IN, _merge_pdf, batch=True, min_files=2)
