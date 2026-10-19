@@ -221,6 +221,9 @@ class SettingsDialog(Panel):
         self.hold_mouse = QCheckBox("Mouse too: hold still for half a second, then drag")
         self.hold_mouse.setChecked(data.get("hold_with_mouse", False))
         b.addWidget(self.hold_mouse)
+        self.reveal = QCheckBox("Open the folder when a job finishes")
+        self.reveal.setChecked(data.get("reveal_when_done", False))
+        b.addWidget(self.reveal)
         self.startup = QCheckBox(f"Start {NAME} when I sign in")
         self.startup.setChecked(startup)
         b.addWidget(self.startup)
@@ -260,6 +263,7 @@ class SettingsDialog(Panel):
         return {"keys": {m: c.currentText().lower() for m, c in self.combos.items()},
                 "hotkey": self.hotkey.text().strip(), "explorer_only": self.explorer.isChecked(),
                 "hold_to_convert": self.hold.isChecked(), "hold_with_mouse": self.hold_mouse.isChecked(),
+                "reveal_when_done": self.reveal.isChecked(),
                 "image_quality": self.quality.value()}
 
 
@@ -416,6 +420,8 @@ class LimewheelApp(QObject):
             if toast is None:
                 toast = self.toasts.show(done, names, self._reveal)
             toast.finish(done, names, Path(outputs[0]))
+            if self.settings.get("reveal_when_done"):
+                self._reveal(outputs[0])
         elif op.id == "act.path":
             t = self.toasts.show("Path copied", "Paste it anywhere with Ctrl+V.")
             t.finish("Path copied", "Paste it anywhere with Ctrl+V.")

@@ -50,6 +50,11 @@ _P = {
     "headphones": '<path d="M3 18v-6a9 9 0 0 1 18 0v6"/><rect x="2.5" y="14" width="5" height="7" rx="2"/><rect x="16.5" y="14" width="5" height="7" rx="2"/>',
     "bleep": '<path d="M2 12h2M6 9v6M10 6v12M14 9v6"/><path d="m17 9 5 6M22 9l-5 6"/>',
     "share": '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/>',
+    "target": '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="C"/>',
+    "tag": '<path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r="1.2" fill="C"/>',
+    "grid": '<rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/>',
+    "qr": '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM18 18h3v3h-3zM14 20v1M20 14h1"/>',
+    "reorder": '<rect x="3" y="4" width="7" height="9" rx="1.5"/><rect x="14" y="11" width="7" height="9" rx="1.5"/><path d="M14 6h4a2 2 0 0 1 2 2v1M10 18H6a2 2 0 0 1-2-2v-1"/><path d="m18 7 2 2 2-2M6 17l-2-2-2 2"/>',
     "play": '<path d="M7 4.5v15l12.5-7.5z" fill="C"/>',
     "stop": '<rect x="6" y="6" width="12" height="12" rx="2" fill="C"/>',
     "check": '<path d="M4 12.5 9 17.5 20 6.5"/>',
@@ -73,6 +78,9 @@ OP_ICONS = {
     "img.edit": "sliders", "img.crop": "crop", "img.redact": "eye-off", "img.annotate": "pen", "img.background": "layers",
     "vid.crop": "crop", "vid.speed": "gauge", "aud.speed": "gauge", "aud.channels": "headphones",
     "vid.channels": "headphones", "aud.bleep": "bleep", "vid.bleep": "bleep", "act.share": "share",
+    "img.tosize": "target", "vid.tosize": "target", "aud.tosize": "target", "pdf.tosize": "target",
+    "img.meta": "tag", "vid.meta": "tag", "aud.meta": "tag", "pdf.meta": "tag", "pdf.organize": "reorder",
+    "img.collage": "grid", "img.qr": "qr", "pdf.qr": "qr",
 }
 
 

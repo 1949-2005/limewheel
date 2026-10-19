@@ -79,11 +79,11 @@ QLabel[role="title"] {{ font-size: 13pt; font-weight: 600; }}
 QLabel[role="hint"] {{ color: {INK_SOFT}; }}
 QLabel[role="section"] {{ color: {SECTION}; font-weight: 600; }}
 QLabel[role="mono"] {{ font-family: 'Cascadia Mono', Consolas, monospace; color: {INK_SOFT}; }}
-QLineEdit, QComboBox, QSpinBox {{
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
     background: {FIELD}; border: 2px solid transparent; border-radius: 8px; padding: 5px 8px;
     selection-background-color: {ACCENT}; selection-color: white;
 }}
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{ border-color: {ACCENT}; }}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {ACCENT}; }}
 QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{ background: {POPUP}; border-radius: 8px; selection-background-color: {ACCENT};
     selection-color: white; padding: 4px; }}

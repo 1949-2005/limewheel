@@ -7,6 +7,10 @@ Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory $work | Out-Null
 $cases = @(
   @("img.to.heic", "photo.jpg", ""), @("img.to.avif", "photo.jpg", ""), @("img.to.png", "logo.svg", ""), @("img.to.ico", "flower.jpg", ""), @("img.to.icosmall", "flower.jpg", ""), @("img.to.pdf", "flower.jpg", ""),
+  @("img.tosize", "flower.jpg", '{"bytes": 25000}'), @("img.to.svg", "photo.jpg", ""), @("img.qr", "qr.png", ""),
+  @("img.meta", "photo.jpg", '{"fields": {"title": "T"}, "checks": {}, "strip": false}'),
+  @("pdf.organize", "doc.pdf", '{"order": [[1, 90], [0, 0]]}'),
+  @("pdf.meta", "doc.pdf", '{"fields": {"title": "D"}, "strip": false}'), @("aud.tosize", "tone.wav", '{"bytes": 20000}'),
   @("img.edit", "photo.jpg", '{"values": {"Exposure": 40, "Saturation": 20}}'),
   @("img.background", "sample.png", '{"color": "#FFFFFF", "pad": 0.1, "rounded": true, "shadow": true, "square": false}'),
   @("vid.to.webm", "clip.mp4", ""), @("vid.speed", "clip.mp4", '{"speed": 2.0, "pitch": true, "mute": false}'),

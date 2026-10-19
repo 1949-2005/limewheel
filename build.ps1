@@ -11,7 +11,7 @@ Remove-Item app_icon.png
 
 $exclude = "PySide6.QtWebEngineCore","PySide6.QtWebEngineWidgets","PySide6.QtWebEngineQuick","PySide6.Qt3DCore",
            "PySide6.QtQuick","PySide6.QtQml","PySide6.QtMultimedia","PySide6.QtCharts","PySide6.QtDataVisualization",
-           "PySide6.QtPdf","PySide6.QtBluetooth","PySide6.QtNetwork","PySide6.QtOpenGL","tkinter","matplotlib","cv2","numpy","pdf2docx"
+           "PySide6.QtPdf","PySide6.QtBluetooth","PySide6.QtNetwork","PySide6.QtOpenGL","tkinter","matplotlib","cv2","pdf2docx"
 $exArgs = $exclude | ForEach-Object { "--exclude-module", $_ }
 
 pyinstaller --noconfirm --clean --windowed --onedir --name Limewheel --icon app.ico `

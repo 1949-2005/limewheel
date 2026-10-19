@@ -21,6 +21,8 @@ DEFAULTS = {
     "hold_to_convert": True,
     # Same gesture with a mouse (off by default).
     "hold_with_mouse": False,
+    # Open the folder (with the new file selected) when a job finishes.
+    "reveal_when_done": False,
 }
 
 
