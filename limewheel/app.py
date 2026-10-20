@@ -40,58 +40,32 @@ def custom_icon_path() -> Path | None:
 
 
 def lime_pixmap(size: int) -> QPixmap:
-    """Limewheel mark: the app's own wheel — six glossy lime petals around a hollow hub with a pointer."""
+    """Limewheel mark: the wheel's six glass petals (same tint as the app's wheel) on a transparent background."""
     from .wheel import petal_path
     S = 512
     pm = QPixmap(S, S)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
-
-    def glossy(path, light, mid, deep, edge_w=5):
+    c = QPointF(S / 2, S / 2)
+    for k in range(6):
+        a0 = k * 60 - 30
+        path = petal_path(c, 92, 236, a0, a0 + 60, 18, ro=36, ri=16)
         br = path.boundingRect()
         g = QLinearGradient(br.topLeft(), br.bottomRight())
-        g.setColorAt(0, QColor(light))
-        g.setColorAt(0.5, QColor(mid))
-        g.setColorAt(1, QColor(deep))
+        g.setColorAt(0, QColor(B["panel_stops"][0][1]))
+        g.setColorAt(1, QColor(B["panel_stops"][2][1]))
         p.setPen(Qt.NoPen)
         p.setBrush(g)
         p.drawPath(path)
-        sheen = QLinearGradient(br.topLeft(), QPointF(br.left(), br.top() + br.height() * 0.55))
-        sheen.setColorAt(0, QColor(255, 255, 255, 120))
+        sheen = QLinearGradient(br.topLeft(), QPointF(br.left(), br.top() + br.height() * 0.5))
+        sheen.setColorAt(0, QColor(255, 255, 255, 140))
         sheen.setColorAt(1, QColor(255, 255, 255, 0))
         p.setBrush(sheen)
         p.drawPath(path)
-        edge = QLinearGradient(br.topLeft(), br.bottomRight())
-        edge.setColorAt(0, QColor(255, 255, 255, 230))
-        edge.setColorAt(1, QColor(255, 255, 255, 40))
         p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(edge, edge_w))
+        p.setPen(QPen(QColor(B["hot"]), 6))
         p.drawPath(path)
-
-    c = QPointF(S / 2, S / 2)
-    disc = QRadialGradient(c, 236)
-    disc.setColorAt(0.7, QColor(205, 240, 150))
-    disc.setColorAt(1.0, QColor(150, 205, 80))
-    p.setPen(Qt.NoPen)
-    p.setBrush(disc)
-    p.drawEllipse(c, 236, 236)
-    for k in range(6):
-        a0 = k * 60 - 30
-        glossy(petal_path(c, 92, 220, a0, a0 + 60, 16, ro=34, ri=16), "#C8F26A", "#86C93A", "#4E9A12")
-    hub = QPainterPath()
-    hub.addEllipse(c, 70, 70)
-    glossy(hub, "#FFFFFF", "#EEF9DA", "#C9E7A2")
-    arrow = QPainterPath()
-    ax, ay = c.x() - 18, c.y() - 30
-    pts = [(0, 0), (0, 70), (17, 54), (30, 82), (43, 76), (30, 49), (54, 49)]
-    arrow.moveTo(QPointF(ax, ay))
-    for dx, dy in pts[1:]:
-        arrow.lineTo(QPointF(ax + dx, ay + dy))
-    arrow.closeSubpath()
-    p.setBrush(QColor("#1D3A08"))
-    p.setPen(QPen(QColor("#FFFFFF"), 5))
-    p.drawPath(arrow)
     p.end()
     return pm if size == S else pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
