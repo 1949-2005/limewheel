@@ -9,7 +9,7 @@ signs the package on ingestion, so no certificate is needed to submit.
 packaging\build_msix.ps1 `
     -AppDir  <onedir folder with Limewheel.exe + _internal> `
     -Icon    <square PNG, >= 512 px> `
-    -Version 1.3.0.0
+    -Version 1.3.1.0
 ```
 
 The icon PNG for the brand mark can be rendered from the app code (reads only):
@@ -71,7 +71,7 @@ build parameters (they overwrite the dev defaults):
 | `-Publisher`             | Package/Identity/Publisher    | `CN=LimewheelDev`  |
 | `-PublisherDisplayName`  | Publisher display name        | `Limewheel`        |
 
-`-Version` must be 4-part (e.g. `1.3.0.0`); the Store requires the revision
+`-Version` must be 4-part (e.g. `1.3.1.0`); the Store requires the revision
 (last) field to be `0`.
 
 ## runFullTrust justification (paste into the submission)
@@ -107,8 +107,8 @@ one (both need your own action -- the build does not change system settings):
   test machine (needs admin), then sign with the cached `signtool.exe`:
 
   ```powershell
-  signtool sign /fd SHA256 /a /f test.pfx /p <pw> packaging\out\Limewheel_1.3.0.0_x64.msix
-  Add-AppxPackage packaging\out\Limewheel_1.3.0.0_x64.msix
+  signtool sign /fd SHA256 /a /f test.pfx /p <pw> packaging\out\Limewheel_1.3.1.0_x64.msix
+  Add-AppxPackage packaging\out\Limewheel_1.3.1.0_x64.msix
   ```
 
 Neither is required for Store submission -- upload the unsigned `.msix` to

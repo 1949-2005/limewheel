@@ -27,7 +27,7 @@
     A square PNG (>= 512 px) used to generate all tile/logo assets.
 
 .PARAMETER Version
-    4-part package version (default 1.3.0.0).
+    4-part package version (default 1.3.1.0).
 
 .PARAMETER IdentityName
     Package Identity/Name (default "Limewheel.Dev"; use the Partner Center value
@@ -51,7 +51,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$AppDir,
     [Parameter(Mandatory = $true)][string]$Icon,
-    [string]$Version = '1.3.0.0',
+    [string]$Version = '1.3.1.0',
     [string]$IdentityName = 'Limewheel.Dev',
     [string]$Publisher = 'CN=LimewheelDev',
     [string]$PublisherDisplayName = 'Limewheel',
@@ -75,7 +75,7 @@ if (-not (Test-Path (Join-Path $AppDir 'Limewheel.exe'))) {
     throw "AppDir does not contain Limewheel.exe: $AppDir"
 }
 if ($Version -notmatch '^\d+\.\d+\.\d+\.\d+$') {
-    throw "Version must be 4-part (e.g. 1.3.0.0): $Version"
+    throw "Version must be 4-part (e.g. 1.3.1.0): $Version"
 }
 
 # --- 1. Acquire SDK BuildTools (makeappx.exe + signtool.exe) --------------
